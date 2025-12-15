@@ -1,0 +1,24 @@
+# MikesCaptionBuddy v1.0 Dependencies
+
+# GUI Framework
+PySide6>=6.5.0
+
+# Video Playback
+python-mpv>=1.0.0
+
+# Audio Analysis
+librosa>=0.10.0
+numpy>=1.24.0
+soundfile>=0.12.0
+
+# Video/Audio Processing
+ffmpeg-python>=0.2.0
+
+# Transcription (uses local Whisper installation)
+openai-whisper>=20231117
+
+# Database
+# (SQLite is built into Python)
+
+# Utilities
+pysubs2>=1.6.0

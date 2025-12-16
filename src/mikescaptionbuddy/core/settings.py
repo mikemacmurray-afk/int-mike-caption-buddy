@@ -8,6 +8,39 @@ from typing import List, Optional
 
 
 @dataclass
+class StylePreset:
+    """A saved style preset."""
+    slot: int = 0  # 1-10
+    name: str = ""
+    font_family: str = "Arial"
+    font_size: int = 48
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    primary_color: str = "#FFFFFF"
+    secondary_color: str = "#FFFF00"
+    outline_color: str = "#000000"
+    outline_width: int = 2
+    shadow_color: str = "#000000"
+    shadow_offset_x: int = 2
+    shadow_offset_y: int = 2
+    background_color: str = "#000000"
+    background_opacity: float = 0.0
+    alignment: int = 2  # BOTTOM_CENTER
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'StylePreset':
+        """Create from dictionary."""
+        valid_fields = {k for k in cls.__dataclass_fields__}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
+
+
+@dataclass
 class Settings:
     """Application settings."""
 
@@ -35,6 +68,9 @@ class Settings:
     window_width: int = 1400
     window_height: int = 900
     window_maximized: bool = False
+
+    # Style presets (up to 10 saved styles)
+    style_presets: List[dict] = field(default_factory=list)
 
     # Internal
     _settings_path: Optional[str] = field(default=None, repr=False)
@@ -128,3 +164,46 @@ class Settings:
             return videos
 
         return os.path.expanduser('~')
+
+    def get_style_presets(self) -> List['StylePreset']:
+        """Get all saved style presets."""
+        presets = []
+        for data in self.style_presets:
+            presets.append(StylePreset.from_dict(data))
+        return presets
+
+    def get_style_preset(self, slot: int) -> Optional['StylePreset']:
+        """Get a style preset by slot number (1-10)."""
+        for data in self.style_presets:
+            if data.get('slot') == slot:
+                return StylePreset.from_dict(data)
+        return None
+
+    def save_style_preset(self, preset: 'StylePreset') -> None:
+        """Save a style preset to a slot (1-10). Max 10 presets."""
+        if preset.slot < 1 or preset.slot > 10:
+            raise ValueError("Preset slot must be between 1 and 10")
+
+        # Remove existing preset in this slot
+        self.style_presets = [p for p in self.style_presets if p.get('slot') != preset.slot]
+
+        # Add new preset
+        self.style_presets.append(preset.to_dict())
+
+        # Sort by slot number
+        self.style_presets.sort(key=lambda p: p.get('slot', 0))
+
+        self.save()
+
+    def delete_style_preset(self, slot: int) -> None:
+        """Delete a style preset from a slot."""
+        self.style_presets = [p for p in self.style_presets if p.get('slot') != slot]
+        self.save()
+
+    def get_next_available_preset_slot(self) -> int:
+        """Get the next available preset slot (1-10), or 0 if all are used."""
+        used_slots = {p.get('slot') for p in self.style_presets}
+        for slot in range(1, 11):
+            if slot not in used_slots:
+                return slot
+        return 0

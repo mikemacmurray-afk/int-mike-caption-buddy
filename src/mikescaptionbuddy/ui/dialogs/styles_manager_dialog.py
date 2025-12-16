@@ -6,12 +6,13 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QPushButton, QGroupBox, QFormLayout, QLineEdit, QSpinBox,
     QCheckBox, QComboBox, QLabel, QColorDialog, QFontComboBox,
-    QFrame, QSplitter
+    QFrame, QSplitter, QMessageBox, QInputDialog, QTabWidget
 )
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QColor, QFont
 
 from ...core.models import Project, Style, Alignment
+from ...core.settings import Settings, StylePreset
 
 
 class StylePreviewWidget(QFrame):
@@ -88,54 +89,103 @@ class StylePreviewWidget(QFrame):
 class StylesManagerDialog(QDialog):
     """Dialog for managing caption styles."""
 
-    def __init__(self, project: Project, parent=None):
+    def __init__(self, project: Project, settings: Settings = None, parent=None):
         super().__init__(parent)
         self.project = project
+        self.settings = settings or Settings.load()
         self.current_style: Optional[Style] = None
         self._updating = False
 
         self._setup_ui()
         self._load_styles()
+        self._load_presets()
 
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
         self.setWindowTitle("Style Presets Manager")
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(700, 550)
 
         layout = QHBoxLayout(self)
 
-        # Left side - style list
+        # Left side - tabs for Project Styles and Saved Presets
         left_widget = QVBoxLayout()
 
-        left_widget.addWidget(QLabel("Styles:"))
+        self.tabs = QTabWidget()
+
+        # Tab 1: Project Styles
+        project_tab = QFrame()
+        project_layout = QVBoxLayout(project_tab)
+
+        project_layout.addWidget(QLabel("Project Styles:"))
 
         self.style_list = QListWidget()
         self.style_list.itemClicked.connect(self._on_style_selected)
-        left_widget.addWidget(self.style_list)
+        project_layout.addWidget(self.style_list)
 
         # List buttons
         list_buttons = QHBoxLayout()
 
         btn_add = QPushButton("+")
         btn_add.setFixedWidth(30)
+        btn_add.setToolTip("Add new style")
         btn_add.clicked.connect(self._on_add_style)
         list_buttons.addWidget(btn_add)
 
         btn_delete = QPushButton("-")
         btn_delete.setFixedWidth(30)
+        btn_delete.setToolTip("Delete selected style")
         btn_delete.clicked.connect(self._on_delete_style)
         list_buttons.addWidget(btn_delete)
 
         btn_duplicate = QPushButton("Dup")
+        btn_duplicate.setToolTip("Duplicate selected style")
         btn_duplicate.clicked.connect(self._on_duplicate_style)
         list_buttons.addWidget(btn_duplicate)
 
         list_buttons.addStretch()
-        left_widget.addLayout(list_buttons)
+        project_layout.addLayout(list_buttons)
+
+        # Save to preset button
+        btn_save_preset = QPushButton("Save to Preset...")
+        btn_save_preset.setToolTip("Save current style as a global preset")
+        btn_save_preset.clicked.connect(self._on_save_to_preset)
+        project_layout.addWidget(btn_save_preset)
+
+        self.tabs.addTab(project_tab, "Project Styles")
+
+        # Tab 2: Saved Presets
+        presets_tab = QFrame()
+        presets_layout = QVBoxLayout(presets_tab)
+
+        presets_layout.addWidget(QLabel("Saved Presets (10 slots):"))
+
+        self.preset_list = QListWidget()
+        self.preset_list.itemClicked.connect(self._on_preset_selected)
+        presets_layout.addWidget(self.preset_list)
+
+        # Preset buttons
+        preset_buttons = QHBoxLayout()
+
+        btn_load_preset = QPushButton("Load to Project")
+        btn_load_preset.setToolTip("Add selected preset to project styles")
+        btn_load_preset.clicked.connect(self._on_load_preset)
+        preset_buttons.addWidget(btn_load_preset)
+
+        btn_delete_preset = QPushButton("Delete")
+        btn_delete_preset.setToolTip("Delete selected preset")
+        btn_delete_preset.clicked.connect(self._on_delete_preset)
+        preset_buttons.addWidget(btn_delete_preset)
+
+        preset_buttons.addStretch()
+        presets_layout.addLayout(preset_buttons)
+
+        self.tabs.addTab(presets_tab, "Saved Presets")
+
+        left_widget.addWidget(self.tabs)
 
         left_frame = QFrame()
         left_frame.setLayout(left_widget)
-        left_frame.setMaximumWidth(200)
+        left_frame.setMaximumWidth(220)
         layout.addWidget(left_frame)
 
         # Right side - style editor
@@ -470,3 +520,200 @@ class StylesManagerDialog(QDialog):
         self.style_list.addItem(item)
         self.style_list.setCurrentItem(item)
         self._on_style_selected(item)
+
+    # Preset management methods
+
+    def _load_presets(self) -> None:
+        """Load saved presets into the list."""
+        self.preset_list.clear()
+
+        presets = self.settings.get_style_presets()
+        for preset in presets:
+            item = QListWidgetItem(f"[{preset.slot}] {preset.name}")
+            item.setData(Qt.UserRole, preset)
+            self.preset_list.addItem(item)
+
+        if not presets:
+            empty_item = QListWidgetItem("(No saved presets)")
+            empty_item.setFlags(empty_item.flags() & ~Qt.ItemIsSelectable)
+            self.preset_list.addItem(empty_item)
+
+    @Slot()
+    def _on_save_to_preset(self) -> None:
+        """Save current style as a preset."""
+        if not self.current_style:
+            QMessageBox.warning(self, "No Style Selected",
+                              "Please select a style to save as preset.")
+            return
+
+        # Get next available slot
+        next_slot = self.settings.get_next_available_preset_slot()
+
+        if next_slot == 0:
+            # All slots used, ask which to overwrite
+            presets = self.settings.get_style_presets()
+            slot_names = [f"Slot {p.slot}: {p.name}" for p in presets]
+            slot_choice, ok = QInputDialog.getItem(
+                self, "All Slots Full",
+                "All 10 preset slots are used. Select one to overwrite:",
+                slot_names, 0, False
+            )
+            if not ok:
+                return
+            # Extract slot number from choice
+            next_slot = int(slot_choice.split(":")[0].replace("Slot ", ""))
+        else:
+            # Ask for slot number
+            slot, ok = QInputDialog.getInt(
+                self, "Select Preset Slot",
+                f"Save to slot (1-10).\nNext available: {next_slot}",
+                next_slot, 1, 10
+            )
+            if not ok:
+                return
+            next_slot = slot
+
+            # Check if slot is already used
+            existing = self.settings.get_style_preset(next_slot)
+            if existing:
+                reply = QMessageBox.question(
+                    self, "Overwrite Preset?",
+                    f"Slot {next_slot} already contains '{existing.name}'.\n"
+                    "Do you want to overwrite it?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                if reply != QMessageBox.Yes:
+                    return
+
+        # Create preset from current style
+        preset = StylePreset(
+            slot=next_slot,
+            name=self.current_style.name,
+            font_family=self.current_style.font_family,
+            font_size=self.current_style.font_size,
+            bold=self.current_style.bold,
+            italic=self.current_style.italic,
+            underline=self.current_style.underline,
+            primary_color=self.current_style.primary_color,
+            secondary_color=self.current_style.secondary_color,
+            outline_color=self.current_style.outline_color,
+            outline_width=self.current_style.outline_width,
+            shadow_color=self.current_style.shadow_color,
+            shadow_offset_x=self.current_style.shadow_offset_x,
+            shadow_offset_y=self.current_style.shadow_offset_y,
+            background_color=self.current_style.background_color,
+            background_opacity=self.current_style.background_opacity,
+            alignment=self.current_style.alignment.value
+        )
+
+        self.settings.save_style_preset(preset)
+        self._load_presets()
+
+        QMessageBox.information(
+            self, "Preset Saved",
+            f"Style '{preset.name}' saved to slot {preset.slot}."
+        )
+
+    @Slot(QListWidgetItem)
+    def _on_preset_selected(self, item: QListWidgetItem) -> None:
+        """Handle preset selection - show preview."""
+        preset = item.data(Qt.UserRole)
+        if not preset:
+            return
+
+        # Create a temporary style for preview
+        temp_style = Style(
+            name=preset.name,
+            font_family=preset.font_family,
+            font_size=preset.font_size,
+            bold=preset.bold,
+            italic=preset.italic,
+            underline=preset.underline,
+            primary_color=preset.primary_color,
+            secondary_color=preset.secondary_color,
+            outline_color=preset.outline_color,
+            outline_width=preset.outline_width,
+            shadow_color=preset.shadow_color,
+            shadow_offset_x=preset.shadow_offset_x,
+            shadow_offset_y=preset.shadow_offset_y,
+            background_color=preset.background_color,
+            background_opacity=preset.background_opacity,
+            alignment=Alignment(preset.alignment)
+        )
+        self.preview.set_style(temp_style)
+
+    @Slot()
+    def _on_load_preset(self) -> None:
+        """Load selected preset into project styles."""
+        current_item = self.preset_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Preset Selected",
+                              "Please select a preset to load.")
+            return
+
+        preset = current_item.data(Qt.UserRole)
+        if not preset:
+            return
+
+        # Create new style from preset
+        new_id = max((s.id or 0 for s in self.project.styles), default=0) + 1
+        new_style = Style(
+            id=new_id,
+            name=preset.name,
+            font_family=preset.font_family,
+            font_size=preset.font_size,
+            bold=preset.bold,
+            italic=preset.italic,
+            underline=preset.underline,
+            primary_color=preset.primary_color,
+            secondary_color=preset.secondary_color,
+            outline_color=preset.outline_color,
+            outline_width=preset.outline_width,
+            shadow_color=preset.shadow_color,
+            shadow_offset_x=preset.shadow_offset_x,
+            shadow_offset_y=preset.shadow_offset_y,
+            background_color=preset.background_color,
+            background_opacity=preset.background_opacity,
+            alignment=Alignment(preset.alignment)
+        )
+
+        self.project.styles.append(new_style)
+        self._load_styles()
+
+        # Switch to project styles tab and select the new style
+        self.tabs.setCurrentIndex(0)
+        for i in range(self.style_list.count()):
+            item = self.style_list.item(i)
+            if item.data(Qt.UserRole) == new_style:
+                self.style_list.setCurrentItem(item)
+                self._on_style_selected(item)
+                break
+
+        QMessageBox.information(
+            self, "Preset Loaded",
+            f"Preset '{preset.name}' added to project styles."
+        )
+
+    @Slot()
+    def _on_delete_preset(self) -> None:
+        """Delete selected preset."""
+        current_item = self.preset_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Preset Selected",
+                              "Please select a preset to delete.")
+            return
+
+        preset = current_item.data(Qt.UserRole)
+        if not preset:
+            return
+
+        reply = QMessageBox.question(
+            self, "Delete Preset?",
+            f"Are you sure you want to delete preset '{preset.name}' "
+            f"from slot {preset.slot}?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+
+        if reply == QMessageBox.Yes:
+            self.settings.delete_style_preset(preset.slot)
+            self._load_presets()

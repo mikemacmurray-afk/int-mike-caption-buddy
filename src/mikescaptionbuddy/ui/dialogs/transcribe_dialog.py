@@ -1,17 +1,53 @@
 """Transcription dialog using Whisper."""
 
 import os
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QProgressBar, QTextEdit, QGroupBox, QFormLayout,
-    QMessageBox
+    QMessageBox, QLineEdit, QFileDialog
 )
 from PySide6.QtCore import Qt, QThread, Signal
 
 from ...core.models import Project, Subtitle
 from ...core.settings import Settings
+
+
+def get_whisper_cache_dir() -> str:
+    """Get the default Whisper cache directory."""
+    # Check environment variable first
+    if 'WHISPER_CACHE' in os.environ:
+        return os.environ['WHISPER_CACHE']
+
+    # Default locations
+    if os.name == 'nt':  # Windows
+        # Common locations on Windows
+        candidates = [
+            os.path.join(os.environ.get('USERPROFILE', ''), '.cache', 'whisper'),
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'whisper'),
+            os.path.join(os.environ.get('APPDATA', ''), 'whisper'),
+        ]
+    else:
+        candidates = [
+            os.path.join(os.path.expanduser('~'), '.cache', 'whisper'),
+        ]
+
+    # Return first existing directory, or default
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+
+    # Default to user's .cache/whisper
+    return os.path.join(os.path.expanduser('~'), '.cache', 'whisper')
+
+
+def check_model_exists(model_name: str, cache_dir: str) -> bool:
+    """Check if a Whisper model exists in the cache directory."""
+    model_file = f"{model_name}.pt"
+    model_path = os.path.join(cache_dir, model_file)
+    return os.path.exists(model_path)
 
 
 class TranscriptionWorker(QThread):
@@ -21,11 +57,12 @@ class TranscriptionWorker(QThread):
     finished = Signal(list)  # list of subtitles
     error = Signal(str)  # error message
 
-    def __init__(self, audio_path: str, model: str, language: str):
+    def __init__(self, audio_path: str, model: str, language: str, cache_dir: str = None):
         super().__init__()
         self.audio_path = audio_path
         self.model = model
         self.language = language
+        self.cache_dir = cache_dir or get_whisper_cache_dir()
         self._cancelled = False
 
     def run(self) -> None:
@@ -35,9 +72,19 @@ class TranscriptionWorker(QThread):
 
             import whisper
 
-            # Load model
-            self.progress.emit(10, f"Loading {self.model} model...")
-            model = whisper.load_model(self.model)
+            # Check if model exists locally
+            model_exists = check_model_exists(self.model, self.cache_dir)
+
+            if model_exists:
+                self.progress.emit(10, f"Loading {self.model} model from local cache...")
+            else:
+                self.progress.emit(10, f"Model {self.model} not found locally. Downloading...")
+
+            # Load model with explicit download directory to use existing cache
+            model = whisper.load_model(
+                self.model,
+                download_root=self.cache_dir
+            )
 
             if self._cancelled:
                 return
@@ -104,20 +151,22 @@ class TranscribeDialog(QDialog):
         self.project = project
         self.settings = settings
         self.worker: Optional[TranscriptionWorker] = None
+        self.cache_dir = get_whisper_cache_dir()
 
         self._setup_ui()
+        self._check_available_models()
 
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
         self.setWindowTitle("Transcribe with Whisper")
-        self.setMinimumSize(450, 350)
+        self.setMinimumSize(500, 420)
 
         layout = QVBoxLayout(self)
 
         # Info
         info = QLabel(
             "Whisper will analyze your video's audio and generate captions.\n"
-            "Larger models are more accurate but slower."
+            "Using locally installed Whisper models (no download needed if models exist)."
         )
         info.setWordWrap(True)
         layout.addWidget(info)
@@ -145,6 +194,28 @@ class TranscribeDialog(QDialog):
         settings_form.addRow("Language:", self.combo_language)
 
         layout.addWidget(settings_group)
+
+        # Model cache location
+        cache_group = QGroupBox("Whisper Model Location")
+        cache_layout = QVBoxLayout(cache_group)
+
+        cache_path_layout = QHBoxLayout()
+        self.edit_cache_dir = QLineEdit(self.cache_dir)
+        self.edit_cache_dir.setReadOnly(True)
+        cache_path_layout.addWidget(self.edit_cache_dir)
+
+        btn_browse_cache = QPushButton("Browse...")
+        btn_browse_cache.clicked.connect(self._browse_cache_dir)
+        cache_path_layout.addWidget(btn_browse_cache)
+
+        cache_layout.addLayout(cache_path_layout)
+
+        # Model status labels
+        self.model_status_label = QLabel()
+        self.model_status_label.setWordWrap(True)
+        cache_layout.addWidget(self.model_status_label)
+
+        layout.addWidget(cache_group)
 
         # Progress section
         progress_group = QGroupBox("Progress")
@@ -180,6 +251,42 @@ class TranscribeDialog(QDialog):
 
         layout.addLayout(buttons)
 
+    def _check_available_models(self) -> None:
+        """Check which models are available locally."""
+        models = ['small', 'medium', 'large']
+        available = []
+        missing = []
+
+        for model in models:
+            if check_model_exists(model, self.cache_dir):
+                available.append(model)
+            else:
+                missing.append(model)
+
+        if available:
+            status = f"Available locally: {', '.join(available)}"
+            if missing:
+                status += f"\nNot found (will download): {', '.join(missing)}"
+            self.model_status_label.setText(status)
+            self.model_status_label.setStyleSheet("color: #4a9;")
+        else:
+            self.model_status_label.setText(
+                "No models found locally. Models will be downloaded on first use.\n"
+                "If you have Whisper models installed elsewhere, use Browse to locate them."
+            )
+            self.model_status_label.setStyleSheet("color: #a94;")
+
+    def _browse_cache_dir(self) -> None:
+        """Browse for Whisper cache directory."""
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Whisper Models Directory",
+            self.cache_dir
+        )
+        if path:
+            self.cache_dir = path
+            self.edit_cache_dir.setText(path)
+            self._check_available_models()
+
     def _on_transcribe(self) -> None:
         """Start transcription."""
         if not self.project.video_path:
@@ -203,7 +310,8 @@ class TranscribeDialog(QDialog):
         self.worker = TranscriptionWorker(
             self.project.video_path,
             model,
-            language
+            language,
+            self.cache_dir
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -211,6 +319,7 @@ class TranscribeDialog(QDialog):
         self.worker.start()
 
         self._log("Starting transcription...")
+        self._log(f"Using model cache: {self.cache_dir}")
 
     def _on_cancel(self) -> None:
         """Cancel transcription or close dialog."""

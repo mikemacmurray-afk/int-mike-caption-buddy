@@ -514,6 +514,7 @@ class MainWindow(QMainWindow):
         """Open styles manager dialog."""
         dialog = StylesManagerDialog(
             self.project_manager.current_project,
+            self.settings,
             self
         )
         dialog.exec()

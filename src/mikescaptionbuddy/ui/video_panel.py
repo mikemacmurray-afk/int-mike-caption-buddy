@@ -1,11 +1,12 @@
 """Video preview panel with playback controls."""
 
 import os
+import sys
 from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider,
-    QLabel, QFrame, QSizePolicy
+    QLabel, QFrame, QSizePolicy, QApplication
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QColor, QPalette
@@ -29,9 +30,9 @@ class VideoPanel(QWidget):
         self._audio_only = False
         self._mpv_player = None
         self._captions_visible = True
+        self._mpv_initialized = False
 
         self._setup_ui()
-        self._setup_mpv()
         self._setup_timer()
 
     def _setup_ui(self) -> None:
@@ -40,24 +41,23 @@ class VideoPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Video container
-        self.video_container = QFrame()
-        self.video_container.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        # Video container - use a simple QWidget for MPV embedding
+        self.video_container = QWidget()
         self.video_container.setMinimumSize(400, 300)
         self.video_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_container.setAttribute(Qt.WA_DontCreateNativeAncestors)
+        self.video_container.setAttribute(Qt.WA_NativeWindow)
 
         # Set black background for video area
-        palette = self.video_container.palette()
-        palette.setColor(QPalette.Window, QColor(30, 30, 30))
-        self.video_container.setPalette(palette)
-        self.video_container.setAutoFillBackground(True)
+        self.video_container.setStyleSheet("background-color: #1e1e1e;")
 
         # Placeholder label (shown when no video)
-        video_layout = QVBoxLayout(self.video_container)
+        self.video_layout = QVBoxLayout(self.video_container)
+        self.video_layout.setContentsMargins(0, 0, 0, 0)
         self.placeholder_label = QLabel("No video loaded\n\nFile → Open Video to begin")
         self.placeholder_label.setAlignment(Qt.AlignCenter)
-        self.placeholder_label.setStyleSheet("color: #888; font-size: 14px;")
-        video_layout.addWidget(self.placeholder_label)
+        self.placeholder_label.setStyleSheet("color: #888; font-size: 14px; background-color: #1e1e1e;")
+        self.video_layout.addWidget(self.placeholder_label)
 
         layout.addWidget(self.video_container, 1)
 
@@ -121,22 +121,43 @@ class VideoPanel(QWidget):
         # Initially disable controls
         self._set_controls_enabled(False)
 
-    def _setup_mpv(self) -> None:
-        """Setup MPV player."""
+    def _init_mpv(self) -> bool:
+        """Initialize MPV player (called when needed)."""
+        if self._mpv_initialized:
+            return self._mpv_player is not None
+
+        self._mpv_initialized = True
+
         try:
             import mpv
 
-            # Create player with embedding
-            self._mpv_player = mpv.MPV(
-                wid=str(int(self.video_container.winId())),
-                vo='gpu',
-                hwdec='auto',
-                keep_open='yes',
-                idle='yes',
-                osc='no',
-                input_default_bindings='no',
-                input_vo_keyboard='no',
-            )
+            # Ensure the widget has a valid window ID
+            QApplication.processEvents()
+            wid = int(self.video_container.winId())
+
+            # Create player with embedding - use Windows-compatible settings
+            if sys.platform == 'win32':
+                self._mpv_player = mpv.MPV(
+                    wid=str(wid),
+                    vo='gpu-next',  # Best for Windows
+                    hwdec='auto',
+                    keep_open='yes',
+                    idle='yes',
+                    osc='no',
+                    input_default_bindings='no',
+                    input_vo_keyboard='no',
+                )
+            else:
+                self._mpv_player = mpv.MPV(
+                    wid=str(wid),
+                    vo='gpu',
+                    hwdec='auto',
+                    keep_open='yes',
+                    idle='yes',
+                    osc='no',
+                    input_default_bindings='no',
+                    input_vo_keyboard='no',
+                )
 
             # Setup event handlers
             @self._mpv_player.property_observer('time-pos')
@@ -156,14 +177,16 @@ class VideoPanel(QWidget):
                 self._is_playing = not value
                 self._update_play_button()
 
-            self.placeholder_label.hide()
+            return True
 
-        except ImportError:
-            print("Warning: python-mpv not installed. Video playback unavailable.")
+        except ImportError as e:
+            print(f"Warning: python-mpv not installed: {e}")
             self._mpv_player = None
+            return False
         except Exception as e:
             print(f"Warning: Could not initialize MPV: {e}")
             self._mpv_player = None
+            return False
 
     def _setup_timer(self) -> None:
         """Setup update timer for UI sync."""
@@ -209,15 +232,30 @@ class VideoPanel(QWidget):
     def load_video(self, path: str, audio_only: bool = False) -> bool:
         """Load a video or audio file."""
         if not os.path.exists(path):
+            print(f"Video file not found: {path}")
             return False
 
         self._video_path = path
         self._audio_only = audio_only
 
+        # Initialize MPV if not done yet
+        if not self._init_mpv():
+            print("Failed to initialize MPV player")
+            self.placeholder_label.setText("Video playback unavailable\n\nMPV not installed or failed to initialize")
+            return False
+
         if self._mpv_player:
             try:
+                # Hide placeholder
+                self.placeholder_label.hide()
+
+                # Load the video
                 self._mpv_player.play(path)
                 self._mpv_player.pause = True
+
+                # Wait a moment for MPV to initialize the video
+                QTimer.singleShot(200, self._on_video_loaded)
+
                 self._set_controls_enabled(True)
 
                 if audio_only:
@@ -227,9 +265,20 @@ class VideoPanel(QWidget):
                 return True
             except Exception as e:
                 print(f"Error loading video: {e}")
+                self.placeholder_label.setText(f"Error loading video:\n{str(e)}")
+                self.placeholder_label.show()
                 return False
 
         return False
+
+    def _on_video_loaded(self) -> None:
+        """Called after video is loaded to ensure first frame shows."""
+        if self._mpv_player and not self._audio_only:
+            try:
+                # Seek to start to show first frame
+                self._mpv_player.seek(0, 'absolute')
+            except:
+                pass
 
     def play(self) -> None:
         """Start playback."""
@@ -290,11 +339,9 @@ class VideoPanel(QWidget):
         """Toggle caption visibility."""
         self._captions_visible = visible
         self.btn_captions.setChecked(visible)
-        # TODO: Actually toggle ASS subtitle visibility in mpv
 
     def update_captions(self) -> None:
         """Update caption display."""
-        # TODO: Refresh subtitle display
         pass
 
     def toggle_fullscreen(self) -> None:
@@ -306,7 +353,10 @@ class VideoPanel(QWidget):
         """Cleanup resources."""
         self._update_timer.stop()
         if self._mpv_player:
-            self._mpv_player.terminate()
+            try:
+                self._mpv_player.terminate()
+            except:
+                pass
             self._mpv_player = None
 
     # Slots

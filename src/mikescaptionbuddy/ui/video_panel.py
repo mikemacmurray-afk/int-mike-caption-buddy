@@ -12,103 +12,68 @@ from PySide6.QtCore import Qt, Signal, Slot, QTimer, QRect
 from PySide6.QtGui import QColor, QPalette, QPainter, QFont, QPen, QBrush
 
 
-class CaptionOverlay(QWidget):
-    """Transparent overlay for displaying captions on video."""
+class CaptionOverlay(QLabel):
+    """Caption bar for displaying subtitles below video."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setStyleSheet("background: transparent;")
+        self.setAlignment(Qt.AlignCenter)
+        self.setWordWrap(True)
 
-        self._text = ""
-        self._font_family = "Arial"
-        self._font_size = 32
-        self._primary_color = "#FFFFFF"
-        self._outline_color = "#000000"
-        self._outline_width = 2
-        self._background_color = "#000000"
-        self._background_opacity = 0.0
         self._v_align = "bottom"  # top, middle, bottom
         self._h_align = "center"  # left, center, right
+        self._font_family = "Arial"
+        self._font_size = 24
+        self._primary_color = "#FFFFFF"
+        self._outline_color = "#000000"
+
+        self._update_style()
+
+    def _update_style(self) -> None:
+        """Update the label style."""
+        # Set horizontal alignment
+        if self._h_align == "left":
+            align = "left"
+        elif self._h_align == "right":
+            align = "right"
+        else:
+            align = "center"
+
+        self.setStyleSheet(f"""
+            QLabel {{
+                color: {self._primary_color};
+                font-family: {self._font_family};
+                font-size: {self._font_size}px;
+                font-weight: bold;
+                background-color: #1a1a1a;
+                padding: 10px 20px;
+                border-radius: 4px;
+                qproperty-alignment: 'Align{align.title()} | AlignVCenter';
+            }}
+        """)
 
     def set_caption(self, text: str, style: dict = None) -> None:
         """Set the caption text and style."""
-        self._text = text
         if style:
             self._font_family = style.get('font_family', 'Arial')
             self._font_size = style.get('font_size', 32)
             self._primary_color = style.get('primary_color', '#FFFFFF')
             self._outline_color = style.get('outline_color', '#000000')
-            self._outline_width = style.get('outline_width', 2)
-            self._background_color = style.get('background_color', '#000000')
-            self._background_opacity = style.get('background_opacity', 0.0)
-        self.update()
+            self._update_style()
+
+        self.setText(text)
+        self.setVisible(bool(text))
 
     def set_alignment(self, v_align: str, h_align: str) -> None:
         """Set caption alignment."""
         self._v_align = v_align
         self._h_align = h_align
-        self.update()
+        self._update_style()
 
     def clear(self) -> None:
         """Clear the caption."""
-        self._text = ""
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        """Paint the caption overlay."""
-        if not self._text:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-
-        # Setup font
-        font = QFont(self._font_family, self._font_size)
-        font.setBold(True)
-        painter.setFont(font)
-
-        # Calculate text rectangle
-        metrics = painter.fontMetrics()
-        text_width = metrics.horizontalAdvance(self._text)
-        text_height = metrics.height()
-
-        # Calculate position based on alignment
-        margin = 20
-        if self._h_align == "left":
-            x = margin
-        elif self._h_align == "right":
-            x = self.width() - text_width - margin
-        else:  # center
-            x = (self.width() - text_width) // 2
-
-        if self._v_align == "top":
-            y = margin + text_height
-        elif self._v_align == "middle":
-            y = (self.height() + text_height) // 2
-        else:  # bottom
-            y = self.height() - margin
-
-        # Draw background box if enabled
-        if self._background_opacity > 0:
-            bg_color = QColor(self._background_color)
-            bg_color.setAlphaF(self._background_opacity)
-            bg_rect = QRect(x - 8, y - text_height, text_width + 16, text_height + 8)
-            painter.fillRect(bg_rect, bg_color)
-
-        # Draw outline (by drawing text multiple times offset)
-        if self._outline_width > 0:
-            painter.setPen(QColor(self._outline_color))
-            for dx in range(-self._outline_width, self._outline_width + 1):
-                for dy in range(-self._outline_width, self._outline_width + 1):
-                    if dx != 0 or dy != 0:
-                        painter.drawText(x + dx, y + dy, self._text)
-
-        # Draw main text
-        painter.setPen(QColor(self._primary_color))
-        painter.drawText(x, y, self._text)
+        self.setText("")
+        self.hide()
 
 
 class VideoPanel(QWidget):
@@ -143,13 +108,10 @@ class VideoPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        # Video container wrapper (to hold video + caption overlay)
-        self.video_wrapper = QWidget()
-        self.video_wrapper.setMinimumSize(400, 300)
-        self.video_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
         # Video container - use a simple QWidget for MPV embedding
-        self.video_container = QWidget(self.video_wrapper)
+        self.video_container = QWidget()
+        self.video_container.setMinimumSize(400, 300)
+        self.video_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_container.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self.video_container.setAttribute(Qt.WA_NativeWindow)
         self.video_container.setStyleSheet("background-color: #1e1e1e;")
@@ -162,15 +124,14 @@ class VideoPanel(QWidget):
         self.placeholder_label.setStyleSheet("color: #888; font-size: 14px; background-color: #1e1e1e;")
         self.video_layout.addWidget(self.placeholder_label)
 
-        # Caption overlay (on top of video) - NOT in layout, positioned manually
-        self.caption_overlay = CaptionOverlay(self.video_wrapper)
+        layout.addWidget(self.video_container, 1)
 
-        # Setup wrapper layout for video container
-        wrapper_layout = QVBoxLayout(self.video_wrapper)
-        wrapper_layout.setContentsMargins(0, 0, 0, 0)
-        wrapper_layout.addWidget(self.video_container)
-
-        layout.addWidget(self.video_wrapper, 1)
+        # Caption display bar (shows current caption text - below video)
+        self.caption_overlay = CaptionOverlay()
+        self.caption_overlay.setMinimumHeight(50)
+        self.caption_overlay.setMaximumHeight(80)
+        self.caption_overlay.hide()  # Hidden until there's a caption
+        layout.addWidget(self.caption_overlay)
 
         # Alignment controls bar
         align_widget = QWidget()
@@ -538,27 +499,6 @@ class VideoPanel(QWidget):
         """Handle horizontal alignment change."""
         self._h_align = text.lower()
         self.caption_overlay.set_alignment(self._v_align, self._h_align)
-
-    def resizeEvent(self, event) -> None:
-        """Handle resize to update caption overlay size."""
-        super().resizeEvent(event)
-        self._update_overlay_geometry()
-
-    def showEvent(self, event) -> None:
-        """Handle show event to initialize overlay geometry."""
-        super().showEvent(event)
-        # Delay geometry update to ensure layout is complete
-        QTimer.singleShot(50, self._update_overlay_geometry)
-
-    def _update_overlay_geometry(self) -> None:
-        """Update caption overlay to match video container."""
-        if hasattr(self, 'caption_overlay') and hasattr(self, 'video_container'):
-            # Get video container geometry relative to wrapper
-            geom = self.video_container.geometry()
-            self.caption_overlay.setGeometry(geom)
-            # Ensure overlay is on top
-            self.caption_overlay.raise_()
-            self.caption_overlay.show()
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""

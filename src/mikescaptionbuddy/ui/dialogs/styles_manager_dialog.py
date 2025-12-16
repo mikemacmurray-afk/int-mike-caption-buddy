@@ -311,7 +311,58 @@ class StylesManagerDialog(QDialog):
         self.combo_align.currentIndexChanged.connect(self._on_property_changed)
         props_form.addRow("Alignment:", self.combo_align)
 
+        # Rotation
+        rotation_layout = QHBoxLayout()
+        self.spin_rotation = QSpinBox()
+        self.spin_rotation.setRange(-360, 360)
+        self.spin_rotation.setSuffix("°")
+        self.spin_rotation.valueChanged.connect(self._on_property_changed)
+        rotation_layout.addWidget(self.spin_rotation)
+        rotation_layout.addStretch()
+        props_form.addRow("Rotation:", rotation_layout)
+
         right_widget.addWidget(props_group)
+
+        # Word Options group
+        word_group = QGroupBox("Word Options")
+        word_form = QFormLayout(word_group)
+
+        # Split to words
+        self.check_split_words = QCheckBox("Split subtitle into words")
+        self.check_split_words.setToolTip("Automatically split subtitles into individual words with timing")
+        self.check_split_words.stateChanged.connect(self._on_property_changed)
+        word_form.addRow(self.check_split_words)
+
+        # Word by word
+        self.check_word_by_word = QCheckBox("Word by word display")
+        self.check_word_by_word.setToolTip("Display words one at a time (karaoke-style)")
+        self.check_word_by_word.stateChanged.connect(self._on_property_changed)
+        word_form.addRow(self.check_word_by_word)
+
+        right_widget.addWidget(word_group)
+
+        # Karaoke Options group
+        karaoke_group = QGroupBox("Karaoke Options")
+        karaoke_form = QFormLayout(karaoke_group)
+
+        # Karaoke style
+        self.combo_karaoke = QComboBox()
+        self.combo_karaoke.addItem("None", "none")
+        self.combo_karaoke.addItem("Highlight", "highlight")
+        self.combo_karaoke.addItem("Fill", "fill")
+        self.combo_karaoke.addItem("Outline", "outline")
+        self.combo_karaoke.currentIndexChanged.connect(self._on_property_changed)
+        karaoke_form.addRow("Style:", self.combo_karaoke)
+
+        # Karaoke color
+        karaoke_color_layout = QHBoxLayout()
+        self.btn_karaoke_color = QPushButton("Karaoke Color")
+        self.btn_karaoke_color.clicked.connect(lambda: self._pick_color('karaoke'))
+        karaoke_color_layout.addWidget(self.btn_karaoke_color)
+        karaoke_color_layout.addStretch()
+        karaoke_form.addRow("Color:", karaoke_color_layout)
+
+        right_widget.addWidget(karaoke_group)
 
         # Buttons
         buttons = QHBoxLayout()
@@ -361,6 +412,11 @@ class StylesManagerDialog(QDialog):
         self.btn_bg.setEnabled(enabled)
         self.spin_bg_opacity.setEnabled(enabled)
         self.combo_align.setEnabled(enabled)
+        self.spin_rotation.setEnabled(enabled)
+        self.check_split_words.setEnabled(enabled)
+        self.check_word_by_word.setEnabled(enabled)
+        self.combo_karaoke.setEnabled(enabled)
+        self.btn_karaoke_color.setEnabled(enabled)
 
     def _update_editor(self) -> None:
         """Update editor with current style."""
@@ -387,12 +443,26 @@ class StylesManagerDialog(QDialog):
                 self.combo_align.setCurrentIndex(i)
                 break
 
+        # Set rotation
+        self.spin_rotation.setValue(int(self.current_style.rotation))
+
+        # Set word options
+        self.check_split_words.setChecked(self.current_style.split_to_words)
+        self.check_word_by_word.setChecked(self.current_style.word_by_word)
+
+        # Set karaoke options
+        for i in range(self.combo_karaoke.count()):
+            if self.combo_karaoke.itemData(i) == self.current_style.karaoke_style:
+                self.combo_karaoke.setCurrentIndex(i)
+                break
+
         # Update color buttons
         self._update_color_button(self.btn_primary, self.current_style.primary_color)
         self._update_color_button(self.btn_secondary, self.current_style.secondary_color)
         self._update_color_button(self.btn_outline, self.current_style.outline_color)
         self._update_color_button(self.btn_shadow, self.current_style.shadow_color)
         self._update_color_button(self.btn_bg, self.current_style.background_color)
+        self._update_color_button(self.btn_karaoke_color, self.current_style.karaoke_color)
 
         self.preview.set_style(self.current_style)
 
@@ -442,6 +512,10 @@ class StylesManagerDialog(QDialog):
         self.current_style.shadow_offset_y = self.spin_shadow_y.value()
         self.current_style.background_opacity = self.spin_bg_opacity.value() / 100.0
         self.current_style.alignment = Alignment(self.combo_align.currentData())
+        self.current_style.rotation = float(self.spin_rotation.value())
+        self.current_style.split_to_words = self.check_split_words.isChecked()
+        self.current_style.word_by_word = self.check_word_by_word.isChecked()
+        self.current_style.karaoke_style = self.combo_karaoke.currentData()
 
         # Update list item text
         current_item = self.style_list.currentItem()
@@ -510,7 +584,12 @@ class StylesManagerDialog(QDialog):
             shadow_offset_y=self.current_style.shadow_offset_y,
             background_color=self.current_style.background_color,
             background_opacity=self.current_style.background_opacity,
-            alignment=self.current_style.alignment
+            alignment=self.current_style.alignment,
+            split_to_words=self.current_style.split_to_words,
+            word_by_word=self.current_style.word_by_word,
+            karaoke_style=self.current_style.karaoke_style,
+            karaoke_color=self.current_style.karaoke_color,
+            rotation=self.current_style.rotation
         )
 
         self.project.styles.append(new_style)
@@ -603,7 +682,12 @@ class StylesManagerDialog(QDialog):
             shadow_offset_y=self.current_style.shadow_offset_y,
             background_color=self.current_style.background_color,
             background_opacity=self.current_style.background_opacity,
-            alignment=self.current_style.alignment.value
+            alignment=self.current_style.alignment.value,
+            split_to_words=self.current_style.split_to_words,
+            word_by_word=self.current_style.word_by_word,
+            karaoke_style=self.current_style.karaoke_style,
+            karaoke_color=self.current_style.karaoke_color,
+            rotation=self.current_style.rotation
         )
 
         self.settings.save_style_preset(preset)
@@ -638,7 +722,12 @@ class StylesManagerDialog(QDialog):
             shadow_offset_y=preset.shadow_offset_y,
             background_color=preset.background_color,
             background_opacity=preset.background_opacity,
-            alignment=Alignment(preset.alignment)
+            alignment=Alignment(preset.alignment),
+            split_to_words=preset.split_to_words,
+            word_by_word=preset.word_by_word,
+            karaoke_style=preset.karaoke_style,
+            karaoke_color=preset.karaoke_color,
+            rotation=preset.rotation
         )
         self.preview.set_style(temp_style)
 
@@ -674,7 +763,12 @@ class StylesManagerDialog(QDialog):
             shadow_offset_y=preset.shadow_offset_y,
             background_color=preset.background_color,
             background_opacity=preset.background_opacity,
-            alignment=Alignment(preset.alignment)
+            alignment=Alignment(preset.alignment),
+            split_to_words=preset.split_to_words,
+            word_by_word=preset.word_by_word,
+            karaoke_style=preset.karaoke_style,
+            karaoke_color=preset.karaoke_color,
+            rotation=preset.rotation
         )
 
         self.project.styles.append(new_style)

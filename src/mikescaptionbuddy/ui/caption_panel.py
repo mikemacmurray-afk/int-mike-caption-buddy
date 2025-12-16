@@ -15,6 +15,7 @@ from PySide6.QtGui import (
 )
 
 from ..core.models import Project, Subtitle, Word, Style, StyleOverride
+from ..core.settings import Settings
 
 
 class WordHighlighter(QSyntaxHighlighter):
@@ -99,12 +100,18 @@ class CaptionPanel(QWidget):
         super().__init__(parent)
 
         self._project: Optional[Project] = None
+        self._settings: Optional[Settings] = None
         self._current_subtitle: Optional[Subtitle] = None
         self._selected_subtitles: List[Subtitle] = []  # For multi-selection
         self._selected_word_index: Optional[int] = None
         self._highlighter: Optional[WordHighlighter] = None
 
         self._setup_ui()
+
+    def set_settings(self, settings: Settings) -> None:
+        """Set settings for loading presets."""
+        self._settings = settings
+        self._update_style_combo()
 
     def _setup_ui(self) -> None:
         """Setup the panel UI."""
@@ -350,14 +357,24 @@ class CaptionPanel(QWidget):
             self.subtitle_list.addItem(item)
 
     def _update_style_combo(self) -> None:
-        """Update the style combo box."""
+        """Update the style combo box with project styles and saved presets."""
         self.style_combo.clear()
 
         if not self._project:
             return
 
+        # Add project styles
         for style in self._project.styles:
             self.style_combo.addItem(style.name, style.id)
+
+        # Add separator and saved presets if settings available
+        if self._settings:
+            presets = self._settings.get_style_presets()
+            if presets:
+                self.style_combo.insertSeparator(self.style_combo.count())
+                for preset in presets:
+                    # Store preset data with special marker to distinguish from project styles
+                    self.style_combo.addItem(f"[Preset] {preset.name}", f"preset:{preset.slot}")
 
     def _update_editor(self) -> None:
         """Update the editor with current subtitle."""
@@ -510,8 +527,47 @@ class CaptionPanel(QWidget):
         if not self._current_subtitle or index < 0:
             return
 
-        style_id = self.style_combo.itemData(index)
-        self._current_subtitle.style_id = style_id
+        style_data = self.style_combo.itemData(index)
+
+        # Check if it's a preset selection
+        if isinstance(style_data, str) and style_data.startswith("preset:"):
+            slot = int(style_data.split(":")[1])
+            if self._settings:
+                preset = self._settings.get_style_preset(slot)
+                if preset:
+                    # Create new style from preset and add to project
+                    from ..core.models import Alignment
+                    new_id = max((s.id or 0 for s in self._project.styles), default=0) + 1
+                    new_style = Style(
+                        id=new_id,
+                        name=preset.name,
+                        font_family=preset.font_family,
+                        font_size=preset.font_size,
+                        bold=preset.bold,
+                        italic=preset.italic,
+                        underline=preset.underline,
+                        primary_color=preset.primary_color,
+                        secondary_color=preset.secondary_color,
+                        outline_color=preset.outline_color,
+                        outline_width=preset.outline_width,
+                        shadow_color=preset.shadow_color,
+                        shadow_offset_x=preset.shadow_offset_x,
+                        shadow_offset_y=preset.shadow_offset_y,
+                        background_color=preset.background_color,
+                        background_opacity=preset.background_opacity,
+                        alignment=Alignment(preset.alignment)
+                    )
+                    self._project.styles.append(new_style)
+                    self._current_subtitle.style_id = new_style.id
+                    self._update_style_combo()
+                    # Select the newly added style
+                    idx = self.style_combo.findData(new_style.id)
+                    if idx >= 0:
+                        self.style_combo.setCurrentIndex(idx)
+        else:
+            # Regular project style
+            self._current_subtitle.style_id = style_data
+
         self.subtitle_changed.emit(self._current_subtitle)
 
     @Slot()

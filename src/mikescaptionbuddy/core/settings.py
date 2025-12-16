@@ -27,6 +27,13 @@ class StylePreset:
     background_color: str = "#000000"
     background_opacity: float = 0.0
     alignment: int = 2  # BOTTOM_CENTER
+    # Word splitting options
+    split_to_words: bool = False
+    word_by_word: bool = False  # Display word by word (karaoke-style timing)
+    # Karaoke and animation options
+    karaoke_style: str = "none"  # none, highlight, fill, outline
+    karaoke_color: str = "#FFFF00"  # Highlight color for karaoke
+    rotation: float = 0.0  # Text rotation in degrees
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""

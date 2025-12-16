@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
 
         # Caption editor panel (right)
         self.caption_panel = CaptionPanel(self)
+        self.caption_panel.set_settings(self.settings)
         top_splitter.addWidget(self.caption_panel)
 
         # Set initial sizes (60% video, 40% caption)

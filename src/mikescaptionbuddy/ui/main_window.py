@@ -213,7 +213,9 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_redo)
         toolbar.addSeparator()
         toolbar.addAction(self.action_transcribe)
+        toolbar.addAction(self.action_styles_manager)
         toolbar.addAction(self.action_export_video)
+        toolbar.addAction(self.action_export_subtitles)
 
     def _setup_panels(self) -> None:
         """Setup the three-panel layout."""
@@ -291,10 +293,12 @@ class MainWindow(QMainWindow):
         self.timeline_panel.position_changed.connect(self.video_panel.seek)
         self.timeline_panel.subtitle_selected.connect(self.caption_panel.select_subtitle)
         self.timeline_panel.subtitle_timing_changed.connect(self._on_subtitle_timing_changed)
+        self.timeline_panel.subtitles_selected.connect(self._on_timeline_selection_changed)
 
         # Caption panel signals
         self.caption_panel.subtitle_changed.connect(self._on_subtitle_changed)
         self.caption_panel.word_style_changed.connect(self._on_word_style_changed)
+        self.caption_panel.subtitles_selected.connect(self._on_caption_selection_changed)
 
     def _apply_settings(self) -> None:
         """Apply settings to the application."""
@@ -434,9 +438,84 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_export_subtitles(self) -> None:
         """Export subtitles to file."""
-        from .dialogs import ExportSubtitlesDialog
-        dialog = ExportSubtitlesDialog(self.project_manager.current_project, self)
-        dialog.exec()
+        if not self.project_manager.current_project:
+            return
+
+        project = self.project_manager.current_project
+
+        # Get save path
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Subtitles",
+            os.path.join(self.settings.get_export_directory(), f"{project.name}_subtitles"),
+            "SRT Subtitles (*.srt);;ASS Subtitles (*.ass);;All Files (*)"
+        )
+
+        if not path:
+            return
+
+        try:
+            if path.lower().endswith('.ass') or 'ASS' in selected_filter:
+                # Export as ASS
+                content = self._export_to_ass(project)
+                if not path.lower().endswith('.ass'):
+                    path += '.ass'
+            else:
+                # Export as SRT
+                content = project.export_to_srt()
+                if not path.lower().endswith('.srt'):
+                    path += '.srt'
+
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            self.status_label.setText(f"Subtitles exported to {os.path.basename(path)}")
+            QMessageBox.information(self, "Export Complete",
+                                  f"Subtitles exported successfully to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export subtitles:\n{str(e)}")
+
+    def _export_to_ass(self, project) -> str:
+        """Export project to ASS format."""
+        lines = [
+            "[Script Info]",
+            f"Title: {project.name}",
+            "ScriptType: v4.00+",
+            "Collisions: Normal",
+            f"PlayResX: {project.video_info.width}",
+            f"PlayResY: {project.video_info.height}",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        ]
+
+        # Add styles
+        for style in project.styles:
+            lines.append(style.to_ass_style())
+
+        lines.extend(["", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"])
+
+        # Add subtitles
+        def ms_to_ass_time(ms: int) -> str:
+            h = ms // 3600000
+            m = (ms % 3600000) // 60000
+            s = (ms % 60000) // 1000
+            cs = (ms % 1000) // 10
+            return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+        for sub in project.subtitles:
+            style_name = "Default"
+            if sub.style_id:
+                style = project.get_style_by_id(sub.style_id)
+                if style:
+                    style_name = style.name
+
+            start = ms_to_ass_time(sub.start_ms)
+            end = ms_to_ass_time(sub.end_ms)
+            text = sub.get_full_text().replace("\n", "\\N")
+            lines.append(f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}")
+
+        return "\n".join(lines)
 
     @Slot()
     def _on_export_video(self) -> None:
@@ -587,6 +666,7 @@ class MainWindow(QMainWindow):
             self.video_panel.load_video(project.video_path)
             self.timeline_panel.load_audio(project.video_path)
 
+        self.video_panel.set_project(project)
         self.timeline_panel.set_project(project)
         self.caption_panel.set_project(project)
 
@@ -612,6 +692,7 @@ class MainWindow(QMainWindow):
         """Handle video position change."""
         self.timeline_panel.set_position(position_ms)
         self._update_time_label(position_ms)
+        self.video_panel.update_captions()
 
     @Slot(int)
     def _on_video_duration_changed(self, duration_ms: int) -> None:
@@ -675,6 +756,26 @@ class MainWindow(QMainWindow):
         self.caption_panel.update_subtitles()
         self.video_panel.update_captions()
         self.project_manager.mark_modified()
+
+    @Slot(list)
+    def _on_timeline_selection_changed(self, subtitles: list) -> None:
+        """Handle selection change in timeline - sync to caption panel."""
+        self._syncing_selection = True
+        self.caption_panel.select_subtitles(subtitles)
+        self._syncing_selection = False
+
+    @Slot(list)
+    def _on_caption_selection_changed(self, subtitles: list) -> None:
+        """Handle selection change in caption panel - sync to timeline."""
+        if getattr(self, '_syncing_selection', False):
+            return
+        # Sync selection to timeline
+        self.timeline_panel.waveform._selected_subtitles.clear()
+        for sub in subtitles:
+            if sub.id:
+                self.timeline_panel.waveform._selected_subtitles.add(sub.id)
+        self.timeline_panel.waveform.update()
+        self.timeline_panel._update_selection_label()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         """Handle window close event."""

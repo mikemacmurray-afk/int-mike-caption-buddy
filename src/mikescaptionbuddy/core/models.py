@@ -272,6 +272,13 @@ class Project:
                 return sub
         return None
 
+    def get_subtitle_by_id(self, subtitle_id: int) -> Optional[Subtitle]:
+        """Get subtitle by ID."""
+        for sub in self.subtitles:
+            if sub.id == subtitle_id:
+                return sub
+        return None
+
     def export_to_srt(self) -> str:
         """Export subtitles to SRT format."""
         lines = []

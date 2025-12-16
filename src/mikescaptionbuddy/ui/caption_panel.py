@@ -91,13 +91,16 @@ class CaptionPanel(QWidget):
 
     # Signals
     subtitle_changed = Signal(object)  # subtitle
+    subtitles_changed = Signal(list)  # list of subtitles (for multi-selection changes)
     word_style_changed = Signal(int, int, dict)  # subtitle_id, word_index, style
+    subtitles_selected = Signal(list)  # list of selected subtitles
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         self._project: Optional[Project] = None
         self._current_subtitle: Optional[Subtitle] = None
+        self._selected_subtitles: List[Subtitle] = []  # For multi-selection
         self._selected_word_index: Optional[int] = None
         self._highlighter: Optional[WordHighlighter] = None
 
@@ -136,10 +139,17 @@ class CaptionPanel(QWidget):
         list_layout.addLayout(list_header)
 
         self.subtitle_list = QListWidget()
+        self.subtitle_list.setSelectionMode(QListWidget.ExtendedSelection)  # Enable multi-selection
         self.subtitle_list.itemClicked.connect(self._on_subtitle_clicked)
+        self.subtitle_list.itemSelectionChanged.connect(self._on_selection_changed)
         self.subtitle_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.subtitle_list.customContextMenuRequested.connect(self._on_list_context_menu)
         list_layout.addWidget(self.subtitle_list)
+
+        # Selection info label
+        self.selection_label = QLabel("")
+        self.selection_label.setStyleSheet("color: #888; font-size: 11px;")
+        list_layout.addWidget(self.selection_label)
 
         splitter.addWidget(list_frame)
 
@@ -157,6 +167,12 @@ class CaptionPanel(QWidget):
         self.style_combo.setMinimumWidth(120)
         self.style_combo.currentIndexChanged.connect(self._on_style_changed)
         style_toolbar.addWidget(self.style_combo)
+
+        self.btn_apply_style = QPushButton("Apply to Selected")
+        self.btn_apply_style.setToolTip("Apply style to all selected subtitles")
+        self.btn_apply_style.clicked.connect(self._on_apply_style_to_selected)
+        self.btn_apply_style.setEnabled(False)
+        style_toolbar.addWidget(self.btn_apply_style)
 
         style_toolbar.addStretch()
 
@@ -402,6 +418,30 @@ class CaptionPanel(QWidget):
 
     # Slots
 
+    @Slot()
+    def _on_selection_changed(self) -> None:
+        """Handle selection change in subtitle list."""
+        selected_items = self.subtitle_list.selectedItems()
+        self._selected_subtitles = [
+            item.subtitle for item in selected_items
+            if isinstance(item, SubtitleListItem)
+        ]
+
+        # Update selection label
+        count = len(self._selected_subtitles)
+        if count == 0:
+            self.selection_label.setText("")
+        elif count == 1:
+            self.selection_label.setText("1 subtitle selected")
+        else:
+            self.selection_label.setText(f"{count} subtitles selected (Ctrl+click to add)")
+
+        # Enable/disable apply style button
+        self.btn_apply_style.setEnabled(count > 1)
+
+        # Emit signal for external listeners
+        self.subtitles_selected.emit(self._selected_subtitles)
+
     @Slot(QListWidgetItem)
     def _on_subtitle_clicked(self, item: QListWidgetItem) -> None:
         """Handle subtitle list item click."""
@@ -473,6 +513,35 @@ class CaptionPanel(QWidget):
         style_id = self.style_combo.itemData(index)
         self._current_subtitle.style_id = style_id
         self.subtitle_changed.emit(self._current_subtitle)
+
+    @Slot()
+    def _on_apply_style_to_selected(self) -> None:
+        """Apply selected style to all selected subtitles."""
+        if not self._selected_subtitles:
+            return
+
+        style_id = self.style_combo.currentData()
+        if style_id is None:
+            return
+
+        for subtitle in self._selected_subtitles:
+            subtitle.style_id = style_id
+
+        self.subtitles_changed.emit(self._selected_subtitles)
+
+    def get_selected_subtitles(self) -> List[Subtitle]:
+        """Get list of selected subtitles."""
+        return self._selected_subtitles.copy()
+
+    def select_subtitles(self, subtitles: List[Subtitle]) -> None:
+        """Select multiple subtitles programmatically."""
+        self.subtitle_list.clearSelection()
+        subtitle_ids = {s.id for s in subtitles}
+
+        for i in range(self.subtitle_list.count()):
+            item = self.subtitle_list.item(i)
+            if isinstance(item, SubtitleListItem) and item.subtitle.id in subtitle_ids:
+                item.setSelected(True)
 
     @Slot()
     def _on_cursor_changed(self) -> None:

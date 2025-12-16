@@ -290,6 +290,7 @@ class MainWindow(QMainWindow):
         # Timeline panel signals
         self.timeline_panel.position_changed.connect(self.video_panel.seek)
         self.timeline_panel.subtitle_selected.connect(self.caption_panel.select_subtitle)
+        self.timeline_panel.subtitle_timing_changed.connect(self._on_subtitle_timing_changed)
 
         # Caption panel signals
         self.caption_panel.subtitle_changed.connect(self._on_subtitle_changed)
@@ -640,6 +641,38 @@ class MainWindow(QMainWindow):
     @Slot(int, int, dict)
     def _on_word_style_changed(self, subtitle_id: int, word_index: int, style: dict) -> None:
         """Handle word style change."""
+        self.video_panel.update_captions()
+        self.project_manager.mark_modified()
+
+    @Slot(object, int, int, int, int)
+    def _on_subtitle_timing_changed(self, subtitle, old_start: int, old_end: int, new_start: int, new_end: int) -> None:
+        """Handle subtitle timing change from timeline drag (with undo support)."""
+        from ..core.undo_manager import SubtitleTimingCommand
+
+        # Create undo command
+        command = SubtitleTimingCommand(
+            subtitle_id=subtitle.id,
+            old_start=old_start,
+            old_end=old_end,
+            new_start=new_start,
+            new_end=new_end,
+            get_subtitle=lambda sid: self.project_manager.current_project.get_subtitle_by_id(sid) if self.project_manager.current_project else None,
+            on_change=self._on_timeline_undo_change
+        )
+
+        # Add to undo stack without re-executing (timing already applied by drag)
+        self.undo_manager._undo_stack.append(command)
+        self.undo_manager._redo_stack.clear()
+        self.undo_manager._emit_changes()
+
+        self.timeline_panel.update_subtitles()
+        self.caption_panel.update_subtitles()
+        self.project_manager.mark_modified()
+
+    def _on_timeline_undo_change(self) -> None:
+        """Callback for timeline undo/redo operations."""
+        self.timeline_panel.update_subtitles()
+        self.caption_panel.update_subtitles()
         self.video_panel.update_captions()
         self.project_manager.mark_modified()
 

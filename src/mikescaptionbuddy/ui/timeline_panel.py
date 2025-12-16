@@ -24,7 +24,7 @@ class WaveformWidget(QWidget):
     position_changed = Signal(int)  # clicked position in ms
     subtitle_selected = Signal(object)  # selected subtitle (for single selection)
     subtitles_selected = Signal(list)  # selected subtitles (for multi-selection)
-    subtitle_moved = Signal(object, int, int)  # subtitle, new_start, new_end
+    subtitle_moved = Signal(object, int, int, int, int)  # subtitle, old_start, old_end, new_start, new_end
     zoom_changed = Signal(float)  # new zoom level
 
     def __init__(self, parent=None):
@@ -42,6 +42,8 @@ class WaveformWidget(QWidget):
         self._drag_edge: Optional[str] = None  # 'left', 'right', or 'move'
         self._drag_start_x = 0
         self._drag_start_pos = 0
+        self._drag_original_start = 0  # Original start_ms before drag
+        self._drag_original_end = 0  # Original end_ms before drag
         self._drag_subtitle: Optional[Subtitle] = None
         self._show_waveform = True
 
@@ -390,6 +392,8 @@ class WaveformWidget(QWidget):
                     self._dragging = True
                     self._drag_start_x = x
                     self._drag_start_pos = subtitle.start_ms
+                    self._drag_original_start = subtitle.start_ms  # Store original for undo
+                    self._drag_original_end = subtitle.end_ms  # Store original for undo
                     self._drag_subtitle = subtitle
 
                 # Emit signals
@@ -447,11 +451,16 @@ class WaveformWidget(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """Handle mouse release."""
         if self._dragging and self._drag_subtitle:
-            self.subtitle_moved.emit(
-                self._drag_subtitle,
-                self._drag_subtitle.start_ms,
-                self._drag_subtitle.end_ms
-            )
+            # Only emit if position actually changed
+            if (self._drag_subtitle.start_ms != self._drag_original_start or
+                    self._drag_subtitle.end_ms != self._drag_original_end):
+                self.subtitle_moved.emit(
+                    self._drag_subtitle,
+                    self._drag_original_start,
+                    self._drag_original_end,
+                    self._drag_subtitle.start_ms,
+                    self._drag_subtitle.end_ms
+                )
         self._dragging = False
         self._drag_edge = None
         self._drag_subtitle = None
@@ -506,6 +515,7 @@ class TimelinePanel(QWidget):
     position_changed = Signal(int)
     subtitle_selected = Signal(object)
     subtitles_selected = Signal(list)
+    subtitle_timing_changed = Signal(object, int, int, int, int)  # subtitle, old_start, old_end, new_start, new_end
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -738,7 +748,8 @@ class TimelinePanel(QWidget):
         self.subtitles_selected.emit(subtitles)
         self._update_selection_label()
 
-    @Slot(object, int, int)
-    def _on_subtitle_moved(self, subtitle: Subtitle, new_start: int, new_end: int) -> None:
+    @Slot(object, int, int, int, int)
+    def _on_subtitle_moved(self, subtitle: Subtitle, old_start: int, old_end: int, new_start: int, new_end: int) -> None:
         """Handle subtitle moved on timeline."""
-        pass
+        # Forward the signal with all timing info for undo support
+        self.subtitle_timing_changed.emit(subtitle, old_start, old_end, new_start, new_end)

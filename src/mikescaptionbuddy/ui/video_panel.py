@@ -130,63 +130,73 @@ class VideoPanel(QWidget):
 
         try:
             import mpv
-
-            # Ensure the widget has a valid window ID
-            QApplication.processEvents()
-            wid = int(self.video_container.winId())
-
-            # Create player with embedding - use Windows-compatible settings
-            if sys.platform == 'win32':
-                self._mpv_player = mpv.MPV(
-                    wid=str(wid),
-                    vo='gpu-next',  # Best for Windows
-                    hwdec='auto',
-                    keep_open='yes',
-                    idle='yes',
-                    osc='no',
-                    input_default_bindings='no',
-                    input_vo_keyboard='no',
-                )
-            else:
-                self._mpv_player = mpv.MPV(
-                    wid=str(wid),
-                    vo='gpu',
-                    hwdec='auto',
-                    keep_open='yes',
-                    idle='yes',
-                    osc='no',
-                    input_default_bindings='no',
-                    input_vo_keyboard='no',
-                )
-
-            # Setup event handlers
-            @self._mpv_player.property_observer('time-pos')
-            def time_observer(name, value):
-                if value is not None:
-                    self._position_ms = int(value * 1000)
-                    self.position_changed.emit(self._position_ms)
-
-            @self._mpv_player.property_observer('duration')
-            def duration_observer(name, value):
-                if value is not None:
-                    self._duration_ms = int(value * 1000)
-                    self.duration_changed.emit(self._duration_ms)
-
-            @self._mpv_player.property_observer('pause')
-            def pause_observer(name, value):
-                self._is_playing = not value
-                self._update_play_button()
-
-            return True
-
         except ImportError as e:
             print(f"Warning: python-mpv not installed: {e}")
             self._mpv_player = None
             return False
-        except Exception as e:
-            print(f"Warning: Could not initialize MPV: {e}")
-            self._mpv_player = None
-            return False
+
+        # Ensure the widget has a valid window ID
+        QApplication.processEvents()
+        wid = int(self.video_container.winId())
+
+        # Try multiple video output drivers in order of preference
+        if sys.platform == 'win32':
+            vo_drivers = ['gpu-next', 'gpu', 'd3d11', 'opengl', 'direct3d', None]
+        else:
+            vo_drivers = ['gpu', 'opengl', 'x11', None]
+
+        last_error = None
+        for vo in vo_drivers:
+            try:
+                mpv_opts = {
+                    'wid': str(wid),
+                    'hwdec': 'auto',
+                    'keep_open': 'yes',
+                    'idle': 'yes',
+                    'osc': 'no',
+                    'input_default_bindings': 'no',
+                    'input_vo_keyboard': 'no',
+                }
+                if vo:
+                    mpv_opts['vo'] = vo
+
+                self._mpv_player = mpv.MPV(**mpv_opts)
+
+                # Setup event handlers
+                @self._mpv_player.property_observer('time-pos')
+                def time_observer(name, value):
+                    if value is not None:
+                        self._position_ms = int(value * 1000)
+                        self.position_changed.emit(self._position_ms)
+
+                @self._mpv_player.property_observer('duration')
+                def duration_observer(name, value):
+                    if value is not None:
+                        self._duration_ms = int(value * 1000)
+                        self.duration_changed.emit(self._duration_ms)
+
+                @self._mpv_player.property_observer('pause')
+                def pause_observer(name, value):
+                    self._is_playing = not value
+                    self._update_play_button()
+
+                print(f"MPV initialized successfully with vo={vo or 'default'}")
+                return True
+
+            except Exception as e:
+                last_error = e
+                print(f"MPV init failed with vo={vo}: {e}")
+                if self._mpv_player:
+                    try:
+                        self._mpv_player.terminate()
+                    except:
+                        pass
+                    self._mpv_player = None
+                continue
+
+        print(f"Warning: Could not initialize MPV with any video output: {last_error}")
+        self._mpv_player = None
+        return False
 
     def _setup_timer(self) -> None:
         """Setup update timer for UI sync."""
@@ -241,7 +251,14 @@ class VideoPanel(QWidget):
         # Initialize MPV if not done yet
         if not self._init_mpv():
             print("Failed to initialize MPV player")
-            self.placeholder_label.setText("Video playback unavailable\n\nMPV not installed or failed to initialize")
+            self.placeholder_label.setText(
+                "Video playback unavailable\n\n"
+                "Please ensure MPV is installed:\n"
+                "1. Download MPV from https://mpv.io/installation/\n"
+                "2. Add MPV to system PATH\n"
+                "3. Install: pip install python-mpv\n"
+                "4. Restart the application"
+            )
             return False
 
         if self._mpv_player:

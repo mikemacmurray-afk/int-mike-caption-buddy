@@ -274,27 +274,42 @@ class VideoExportWorker(QThread):
                 self.progress.emit(20, "Encoding video with captions...")
 
                 try:
-                    # Build ffmpeg command with subtitle filter
-                    stream = ffmpeg.input(input_path)
+                    # Use subprocess directly to avoid ffmpeg-python escaping issues
+                    # For Windows, convert backslashes to forward slashes in the filter
+                    import subprocess
+                    import shutil
 
-                    # Apply subtitle filter
-                    stream = ffmpeg.filter(stream, 'ass', ass_path)
+                    # Find ffmpeg executable
+                    ffmpeg_path = shutil.which('ffmpeg')
+                    if not ffmpeg_path:
+                        raise RuntimeError("FFmpeg not found in PATH")
 
-                    # Scale to target resolution
-                    stream = ffmpeg.filter(stream, 'scale', width, height)
+                    # Build the filter string with proper escaping for Windows
+                    # FFmpeg filter syntax requires escaping : and \ in paths
+                    ass_path_escaped = ass_path.replace('\\', '/').replace(':', r'\:')
 
-                    # Output with encoding settings
-                    stream = ffmpeg.output(
-                        stream,
-                        self.output_path,
-                        vcodec='libx264',
-                        acodec='aac',
-                        preset=preset,
-                        crf=23
-                    )
+                    # Build ffmpeg command
+                    cmd = [
+                        ffmpeg_path,
+                        '-y',  # Overwrite output
+                        '-i', input_path,
+                        '-vf', f"ass='{ass_path_escaped}',scale={width}:{height}",
+                        '-c:v', 'libx264',
+                        '-preset', preset,
+                        '-crf', '23',
+                        '-c:a', 'aac',
+                        self.output_path
+                    ]
 
                     # Run ffmpeg
-                    ffmpeg.run(stream, overwrite_output=True, quiet=True)
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True
+                    )
+
+                    if result.returncode != 0:
+                        raise RuntimeError(f"FFmpeg error:\n{result.stderr}")
 
                 finally:
                     # Clean up temp file

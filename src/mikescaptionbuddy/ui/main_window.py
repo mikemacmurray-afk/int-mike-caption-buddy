@@ -390,6 +390,9 @@ class MainWindow(QMainWindow):
         # Load into video panel
         self.video_panel.load_video(path, audio_only=audio_only)
 
+        # Set project on video panel for caption display
+        self.video_panel.set_project(project)
+
         # Load waveform in timeline
         self.timeline_panel.load_audio(path)
 
@@ -587,6 +590,8 @@ class MainWindow(QMainWindow):
             # Transcription complete, update UI
             self.timeline_panel.update_subtitles()
             self.caption_panel.update_subtitles()
+            # Update caption overlay on video panel
+            self.video_panel.update_captions()
             self.project_manager.mark_modified()
 
     @Slot()
@@ -598,6 +603,8 @@ class MainWindow(QMainWindow):
             self
         )
         dialog.exec()
+        # Update captions in case styles were changed
+        self.video_panel.update_captions()
 
     @Slot()
     def _on_settings(self) -> None:
@@ -717,6 +724,7 @@ class MainWindow(QMainWindow):
     def _on_subtitle_changed(self, subtitle) -> None:
         """Handle subtitle content change."""
         self.timeline_panel.update_subtitle(subtitle)
+        self.video_panel.update_captions()
         self.project_manager.mark_modified()
 
     @Slot(int, int, dict)

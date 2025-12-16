@@ -144,12 +144,12 @@ class VideoPanel(QWidget):
         layout.setSpacing(4)
 
         # Video container wrapper (to hold video + caption overlay)
-        video_wrapper = QWidget()
-        video_wrapper.setMinimumSize(400, 300)
-        video_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_wrapper = QWidget()
+        self.video_wrapper.setMinimumSize(400, 300)
+        self.video_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Video container - use a simple QWidget for MPV embedding
-        self.video_container = QWidget(video_wrapper)
+        self.video_container = QWidget(self.video_wrapper)
         self.video_container.setAttribute(Qt.WA_DontCreateNativeAncestors)
         self.video_container.setAttribute(Qt.WA_NativeWindow)
         self.video_container.setStyleSheet("background-color: #1e1e1e;")
@@ -162,15 +162,15 @@ class VideoPanel(QWidget):
         self.placeholder_label.setStyleSheet("color: #888; font-size: 14px; background-color: #1e1e1e;")
         self.video_layout.addWidget(self.placeholder_label)
 
-        # Caption overlay (on top of video)
-        self.caption_overlay = CaptionOverlay(video_wrapper)
+        # Caption overlay (on top of video) - NOT in layout, positioned manually
+        self.caption_overlay = CaptionOverlay(self.video_wrapper)
 
-        # Setup wrapper layout to stack video and overlay
-        wrapper_layout = QVBoxLayout(video_wrapper)
+        # Setup wrapper layout for video container
+        wrapper_layout = QVBoxLayout(self.video_wrapper)
         wrapper_layout.setContentsMargins(0, 0, 0, 0)
         wrapper_layout.addWidget(self.video_container)
 
-        layout.addWidget(video_wrapper, 1)
+        layout.addWidget(self.video_wrapper, 1)
 
         # Alignment controls bar
         align_widget = QWidget()
@@ -542,9 +542,23 @@ class VideoPanel(QWidget):
     def resizeEvent(self, event) -> None:
         """Handle resize to update caption overlay size."""
         super().resizeEvent(event)
-        # Update caption overlay to match video container size
+        self._update_overlay_geometry()
+
+    def showEvent(self, event) -> None:
+        """Handle show event to initialize overlay geometry."""
+        super().showEvent(event)
+        # Delay geometry update to ensure layout is complete
+        QTimer.singleShot(50, self._update_overlay_geometry)
+
+    def _update_overlay_geometry(self) -> None:
+        """Update caption overlay to match video container."""
         if hasattr(self, 'caption_overlay') and hasattr(self, 'video_container'):
-            self.caption_overlay.setGeometry(self.video_container.geometry())
+            # Get video container geometry relative to wrapper
+            geom = self.video_container.geometry()
+            self.caption_overlay.setGeometry(geom)
+            # Ensure overlay is on top
+            self.caption_overlay.raise_()
+            self.caption_overlay.show()
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
@@ -592,6 +606,10 @@ class VideoPanel(QWidget):
     def _on_captions_toggled(self) -> None:
         """Handle captions toggle."""
         self._captions_visible = self.btn_captions.isChecked()
+        if self._captions_visible:
+            self.update_captions()
+        else:
+            self.caption_overlay.clear()
 
     def keyPressEvent(self, event) -> None:
         """Handle key press events."""

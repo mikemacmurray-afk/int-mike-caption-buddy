@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 
 from ...core.models import Project
 from ...core.settings import Settings
+from ...core.ass_generator import ASSGenerator
 
 
 class ExportSubtitlesDialog(QDialog):
@@ -343,50 +344,12 @@ class VideoExportWorker(QThread):
             self.error.emit(f"Export failed: {str(e)}")
 
     def _generate_ass(self) -> str:
-        """Generate ASS subtitle content."""
-        lines = [
-            "[Script Info]",
-            f"Title: {self.project.name}",
-            "ScriptType: v4.00+",
-            f"PlayResX: {self.project.video_info.width or 1920}",
-            f"PlayResY: {self.project.video_info.height or 1080}",
-            "",
-            "[V4+ Styles]",
-            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
-            "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
-            "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
-            "Alignment, MarginL, MarginR, MarginV, Encoding"
-        ]
-
-        for style in self.project.styles:
-            lines.append(style.to_ass_style())
-
-        lines.extend([
-            "",
-            "[Events]",
-            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"
-        ])
-
-        for subtitle in self.project.subtitles:
-            start = self._ms_to_ass(subtitle.start_ms)
-            end = self._ms_to_ass(subtitle.end_ms)
-            style_name = "Default"
-            if subtitle.style_id:
-                style = self.project.get_style_by_id(subtitle.style_id)
-                if style:
-                    style_name = style.name
-            text = subtitle.get_full_text().replace('\n', '\\N')
-            lines.append(f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}")
-
-        return "\n".join(lines)
-
-    def _ms_to_ass(self, ms: int) -> str:
-        """Convert ms to ASS time."""
-        h = ms // 3600000
-        m = (ms % 3600000) // 60000
-        s = (ms % 60000) // 1000
-        cs = (ms % 1000) // 10
-        return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+        """Generate ASS subtitle content using the full ASSGenerator with effects."""
+        # Use the same ASSGenerator that handles karaoke, word-by-word, etc.
+        width = self.project.video_info.width or 1920
+        height = self.project.video_info.height or 1080
+        generator = ASSGenerator(width, height)
+        return generator.generate_ass(self.project)
 
     def cancel(self) -> None:
         """Cancel export."""

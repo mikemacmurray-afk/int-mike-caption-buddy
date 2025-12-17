@@ -215,6 +215,11 @@ class ASSGenerator:
 
         karaoke_style = style.karaoke_style if style else "none"
         karaoke_color = style.karaoke_color if style else "#FFFF00"
+        primary_color = style.primary_color if style else "#FFFFFF"
+
+        # Handle WBW (Word By Word) karaoke - highlight only current word
+        if karaoke_style == "wbw":
+            return self._apply_wbw_karaoke(subtitle, style)
 
         # Map karaoke style to ASS tag
         # \k = hard fill (syllable by syllable)
@@ -240,6 +245,48 @@ class ASSGenerator:
             # The tag format is: {tag}{duration}text
             # The duration is how long the word takes to "fill"
             parts.append(f"{{{tag}{duration_cs}}}{word.text}")
+
+        return " ".join(parts)
+
+    def _apply_wbw_karaoke(self, subtitle: Subtitle, style: Optional[Style]) -> str:
+        """Apply Word-By-Word karaoke - highlight only the current word."""
+        if not subtitle.words:
+            return subtitle.get_full_text()
+
+        karaoke_color = style.karaoke_color if style else "#FFFF00"
+        primary_color = style.primary_color if style else "#FFFFFF"
+
+        # Convert colors to ASS format
+        karaoke_ass = self._hex_to_ass_color(karaoke_color)
+        primary_ass = self._hex_to_ass_color(primary_color)
+
+        subtitle_start = subtitle.start_ms
+        parts = []
+
+        for word in subtitle.words:
+            # Calculate timing relative to subtitle start (in milliseconds)
+            word_start_rel = word.start_ms - subtitle_start
+            word_end_rel = word.end_ms - subtitle_start
+
+            # Use \t (transform) to animate color changes
+            # Format: \t(start,end,\c&HBBGGRR&)
+            # Start with primary color, transform to karaoke at word start,
+            # transform back to primary at word end
+            if word_start_rel > 0:
+                # Word starts after subtitle start - use transform
+                tags = (
+                    f"\\c{primary_ass}"  # Start with primary color
+                    f"\\t({word_start_rel},{word_start_rel},\\c{karaoke_ass})"  # Change to karaoke at word start
+                    f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"  # Change back at word end
+                )
+            else:
+                # Word starts at subtitle start
+                tags = (
+                    f"\\c{karaoke_ass}"  # Start with karaoke color
+                    f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"  # Change back at word end
+                )
+
+            parts.append(f"{{{tags}}}{word.text}")
 
         return " ".join(parts)
 

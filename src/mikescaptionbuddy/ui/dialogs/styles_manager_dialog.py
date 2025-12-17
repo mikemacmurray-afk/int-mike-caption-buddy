@@ -310,6 +310,7 @@ class StylesManagerDialog(QDialog):
         self.combo_karaoke.addItem("Highlight", "highlight")
         self.combo_karaoke.addItem("Fill", "fill")
         self.combo_karaoke.addItem("Outline", "outline")
+        self.combo_karaoke.addItem("Karaoke WBW (Word highlight)", "wbw")
         self.combo_karaoke.currentIndexChanged.connect(self._on_property_changed)
         karaoke_form.addRow("Style:", self.combo_karaoke)
 

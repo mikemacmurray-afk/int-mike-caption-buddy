@@ -65,24 +65,6 @@ class VideoPanel(QWidget):
 
         layout.addWidget(self.video_container, 1)
 
-        # Caption info bar (shows current caption text for reference)
-        self.caption_bar = QLabel("")
-        self.caption_bar.setAlignment(Qt.AlignCenter)
-        self.caption_bar.setWordWrap(True)
-        self.caption_bar.setMinimumHeight(40)
-        self.caption_bar.setStyleSheet("""
-            QLabel {
-                color: #FFFFFF;
-                font-family: Arial;
-                font-size: 14px;
-                background-color: #2a2a2a;
-                padding: 8px;
-                border-radius: 4px;
-            }
-        """)
-        self.caption_bar.hide()
-        layout.addWidget(self.caption_bar)
-
         # Controls container
         controls_widget = QWidget()
         controls_layout = QHBoxLayout(controls_widget)
@@ -185,10 +167,14 @@ class VideoPanel(QWidget):
                     'osc': 'no',
                     'input_default_bindings': 'no',
                     'input_vo_keyboard': 'no',
-                    # Subtitle rendering options
+                    # Subtitle rendering options - preserve ASS styles
                     'sub_visibility': True,
                     'sub_ass': True,  # Enable ASS subtitle rendering
                     'sub_ass_override': 'no',  # Don't override ASS styles
+                    'sub_ass_force_margins': False,  # Don't force margins
+                    'sub_ass_force_style': '',  # Don't force any style
+                    'sub_fix_timing': False,  # Don't adjust timing
+                    'blend_subtitles': 'video',  # Blend with video for proper display
                 }
                 if vo:
                     mpv_opts['vo'] = vo
@@ -276,23 +262,6 @@ class VideoPanel(QWidget):
         if not self.seek_slider.isSliderDown() and self._duration_ms > 0:
             slider_pos = int((self._position_ms / self._duration_ms) * 1000)
             self.seek_slider.setValue(slider_pos)
-
-        # Update caption info bar
-        self._update_caption_bar()
-
-    def _update_caption_bar(self) -> None:
-        """Update the caption info bar with current subtitle text."""
-        if not self._captions_visible or not self._project:
-            self.caption_bar.hide()
-            return
-
-        # Find subtitle at current position
-        subtitle = self._project.get_subtitle_at_time(self._position_ms)
-        if subtitle:
-            self.caption_bar.setText(subtitle.get_full_text())
-            self.caption_bar.show()
-        else:
-            self.caption_bar.hide()
 
     def _format_time(self, ms: int) -> str:
         """Format milliseconds as HH:MM:SS."""
@@ -383,12 +352,36 @@ class VideoPanel(QWidget):
             # Generate new ASS file
             ass_path = self._ass_generator.save_temp_ass(self._project)
 
-            # Remove existing subtitle track if any
-            if self._subtitle_track_id is not None:
-                try:
-                    self._mpv_player.command('sub-remove', self._subtitle_track_id)
-                except:
-                    pass
+            # Debug: Print ASS content to verify styles
+            try:
+                with open(ass_path, 'r', encoding='utf-8') as f:
+                    ass_content = f.read()
+                print(f"=== Generated ASS Content ===")
+                print(ass_content[:2000])  # Print first 2000 chars
+                print(f"=== End ASS Content ===")
+            except Exception as debug_e:
+                print(f"Debug read error: {debug_e}")
+
+            # Remove ALL existing subtitle tracks first
+            try:
+                track_list = self._mpv_player.track_list
+                for track in track_list:
+                    if track.get('type') == 'sub':
+                        try:
+                            self._mpv_player.command('sub-remove', track.get('id'))
+                        except:
+                            pass
+            except:
+                pass
+
+            # Reset subtitle track ID
+            self._subtitle_track_id = None
+
+            # Ensure ASS override is disabled before loading
+            try:
+                self._mpv_player.sub_ass_override = 'no'
+            except:
+                pass
 
             # Load new subtitle file
             # sub-add <url> [<flags> [<title> [<lang>]]]
@@ -416,6 +409,8 @@ class VideoPanel(QWidget):
 
         except Exception as e:
             print(f"Error refreshing subtitles: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_captions(self) -> None:
         """Update caption display - triggers subtitle refresh."""
@@ -452,7 +447,6 @@ class VideoPanel(QWidget):
             self._is_playing = False
             self._update_play_button()
             self.playback_state_changed.emit(False)
-            self.caption_bar.hide()
 
     def seek(self, position_ms: int) -> None:
         """Seek to position in milliseconds."""
@@ -483,8 +477,6 @@ class VideoPanel(QWidget):
         self.btn_captions.setChecked(visible)
         if self._mpv_player:
             self._mpv_player.sub_visibility = visible
-        if not visible:
-            self.caption_bar.hide()
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
@@ -538,8 +530,6 @@ class VideoPanel(QWidget):
         self._captions_visible = self.btn_captions.isChecked()
         if self._mpv_player:
             self._mpv_player.sub_visibility = self._captions_visible
-        if not self._captions_visible:
-            self.caption_bar.hide()
 
     def keyPressEvent(self, event) -> None:
         """Handle key press events."""

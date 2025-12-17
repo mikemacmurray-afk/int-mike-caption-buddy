@@ -153,16 +153,123 @@ class ASSGenerator:
 
         # Add all subtitles with their assigned styles
         for subtitle in project.subtitles:
-            # Get style name for this subtitle
+            # Get style for this subtitle
+            style = None
             style_name = "Default"
             if subtitle.style_id:
                 style = project.get_style_by_id(subtitle.style_id)
                 if style:
                     style_name = style.name
 
-            lines.append(self._generate_dialogue_line(subtitle, style_name))
+            # Generate dialogue lines based on style options
+            dialogue_lines = self._generate_dialogue_lines(subtitle, style, style_name)
+            lines.extend(dialogue_lines)
 
         return "\n".join(lines)
+
+    def _generate_dialogue_lines(self, subtitle: Subtitle, style: Optional[Style], style_name: str) -> list:
+        """Generate dialogue lines for a subtitle, handling word-by-word and karaoke options."""
+        lines = []
+
+        # Check style options
+        word_by_word = style.word_by_word if style else False
+        split_to_words = style.split_to_words if style else False
+        karaoke_style = style.karaoke_style if style else "none"
+
+        # Ensure we have words if split_to_words is enabled
+        if (split_to_words or word_by_word or karaoke_style != "none") and not subtitle.words:
+            subtitle.split_into_words()
+
+        if word_by_word and subtitle.words:
+            # Word-by-word display: each word is a separate dialogue line
+            for word in subtitle.words:
+                start = self._ms_to_ass_time(word.start_ms)
+                end = self._ms_to_ass_time(word.end_ms)
+                text = word.text
+
+                # Apply word-level style overrides if any
+                if word.has_override():
+                    text = self._apply_single_word_override(word)
+
+                line = f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}"
+                lines.append(line)
+
+        elif karaoke_style != "none" and subtitle.words:
+            # Karaoke display: all words in one line with karaoke timing tags
+            start = self._ms_to_ass_time(subtitle.start_ms)
+            end = self._ms_to_ass_time(subtitle.end_ms)
+            text = self._apply_karaoke_effect(subtitle, style)
+            line = f"Dialogue: 0,{start},{end},{style_name},,0,0,0,,{text}"
+            lines.append(line)
+
+        else:
+            # Standard display
+            lines.append(self._generate_dialogue_line(subtitle, style_name))
+
+        return lines
+
+    def _apply_karaoke_effect(self, subtitle: Subtitle, style: Optional[Style]) -> str:
+        """Apply karaoke timing effects to subtitle words."""
+        if not subtitle.words:
+            return subtitle.get_full_text()
+
+        karaoke_style = style.karaoke_style if style else "none"
+        karaoke_color = style.karaoke_color if style else "#FFFF00"
+
+        # Map karaoke style to ASS tag
+        # \k = hard fill (syllable by syllable)
+        # \kf or \K = smooth fill
+        # \ko = outline fill
+        karaoke_tags = {
+            "highlight": "\\k",     # Hard fill (changes color instantly)
+            "fill": "\\kf",         # Smooth fill (gradual color change)
+            "outline": "\\ko",      # Outline fill
+        }
+
+        tag = karaoke_tags.get(karaoke_style, "\\k")
+        parts = []
+
+        # Calculate base time for karaoke (relative to subtitle start)
+        subtitle_start = subtitle.start_ms
+
+        for word in subtitle.words:
+            # Duration in centiseconds (ASS karaoke uses centiseconds)
+            duration_cs = (word.end_ms - word.start_ms) // 10
+
+            # For karaoke, we use the secondary color for highlighting
+            # The tag format is: {tag}{duration}text
+            # The duration is how long the word takes to "fill"
+            parts.append(f"{{{tag}{duration_cs}}}{word.text}")
+
+        return " ".join(parts)
+
+    def _apply_single_word_override(self, word) -> str:
+        """Apply style override to a single word."""
+        override = word.style_override
+        tags = []
+
+        if override.color:
+            tags.append(f"\\c{self._hex_to_ass_color(override.color)}")
+        if override.font_family:
+            tags.append(f"\\fn{override.font_family}")
+        if override.font_size:
+            tags.append(f"\\fs{override.font_size}")
+        if override.bold is not None:
+            tags.append(f"\\b{1 if override.bold else 0}")
+        if override.italic is not None:
+            tags.append(f"\\i{1 if override.italic else 0}")
+        if override.underline is not None:
+            tags.append(f"\\u{1 if override.underline else 0}")
+        if override.outline_color:
+            tags.append(f"\\3c{self._hex_to_ass_color(override.outline_color)}")
+        if override.outline_width:
+            tags.append(f"\\bord{override.outline_width}")
+        if override.rotation:
+            tags.append(f"\\frz{override.rotation}")
+
+        if tags:
+            return f"{{{''.join(tags)}}}{word.text}"
+        return word.text
 
     def save_temp_ass(self, project: Project) -> str:
         """Save ASS content to a temporary file and return the path."""

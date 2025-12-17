@@ -10,6 +10,7 @@ from datetime import datetime
 from PySide6.QtCore import QObject, Signal, QTimer
 
 from .models import Project, Subtitle, Word, Style, StyleOverride, VideoInfo, Alignment
+from ..resources.styles import get_or_create_styles
 
 
 class ProjectManager(QObject):
@@ -55,9 +56,17 @@ class ProjectManager(QObject):
         self._auto_save_timer.stop()
 
     def new_project(self, name: str = "Untitled Project") -> Project:
-        """Create a new project."""
+        """Create a new project with saved or default styles."""
         self.stop_auto_save()
-        self._current_project = Project(name=name)
+
+        # Create project with saved styles (or default presets if none saved)
+        saved_styles = get_or_create_styles()
+        self._current_project = Project(name=name, styles=saved_styles)
+
+        # Set default style to first style
+        if saved_styles:
+            self._current_project.default_style_id = saved_styles[0].id
+
         self._current_path = None
         self.project_loaded.emit(self._current_project)
         return self._current_project

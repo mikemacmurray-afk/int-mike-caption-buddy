@@ -342,15 +342,24 @@ class TranscribeDialog(QDialog):
         # Clear existing subtitles
         self.project.subtitles.clear()
 
-        # Add new subtitles
+        # Get the first style ID to apply to all subtitles
+        first_style_id = None
+        if self.project.styles:
+            first_style_id = self.project.styles[0].id
+            self._log(f"Applying style '{self.project.styles[0].name}' to all subtitles")
+
+        # Add new subtitles with first style applied
         for subtitle in subtitles:
+            if first_style_id is not None:
+                subtitle.style_id = first_style_id
             self.project.subtitles.append(subtitle)
 
         self._log(f"Transcription complete! Generated {len(subtitles)} subtitles.")
 
         QMessageBox.information(
             self, "Transcription Complete",
-            f"Successfully generated {len(subtitles)} subtitle segments."
+            f"Successfully generated {len(subtitles)} subtitle segments.\n"
+            f"Applied style: {self.project.styles[0].name if self.project.styles else 'Default'}"
         )
 
         self.accept()

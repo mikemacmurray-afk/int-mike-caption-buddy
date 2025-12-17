@@ -13,6 +13,7 @@ from PySide6.QtGui import QColor, QFont
 
 from ...core.models import Project, Style, Alignment
 from ...core.settings import Settings
+from ...resources.styles import save_styles
 
 
 class StylePreviewWidget(QFrame):
@@ -568,10 +569,15 @@ class StylesManagerDialog(QDialog):
 
     @Slot()
     def _on_save(self) -> None:
-        """Handle save button - emit signal to update dropdowns."""
+        """Handle save button - save styles persistently and update dropdowns."""
+        # Save styles to persistent storage
+        save_styles(self.project.styles)
+
+        # Emit signal to update dropdowns and refresh subtitles
         self.styles_updated.emit()
+
         QMessageBox.information(self, "Styles Saved",
-                              "Project styles have been saved and the style dropdown has been updated.")
+                              "Project styles have been saved to disk and the style dropdown has been updated.")
 
     @Slot()
     def _on_close(self) -> None:

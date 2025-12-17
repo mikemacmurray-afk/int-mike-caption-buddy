@@ -352,16 +352,6 @@ class VideoPanel(QWidget):
             # Generate new ASS file
             ass_path = self._ass_generator.save_temp_ass(self._project)
 
-            # Debug: Print ASS content to verify styles
-            try:
-                with open(ass_path, 'r', encoding='utf-8') as f:
-                    ass_content = f.read()
-                print(f"=== Generated ASS Content ===")
-                print(ass_content[:2000])  # Print first 2000 chars
-                print(f"=== End ASS Content ===")
-            except Exception as debug_e:
-                print(f"Debug read error: {debug_e}")
-
             # Remove ALL existing subtitle tracks first
             try:
                 track_list = self._mpv_player.track_list
@@ -405,12 +395,8 @@ class VideoPanel(QWidget):
             if self._captions_visible:
                 self._mpv_player.sub_visibility = True
 
-            print(f"Subtitles loaded from: {ass_path}")
-
         except Exception as e:
-            print(f"Error refreshing subtitles: {e}")
-            import traceback
-            traceback.print_exc()
+            pass  # Silently handle subtitle refresh errors
 
     def update_captions(self) -> None:
         """Update caption display - triggers subtitle refresh."""

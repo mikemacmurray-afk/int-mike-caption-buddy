@@ -98,8 +98,6 @@ def save_styles(styles: List[Style]) -> None:
     with open(styles_path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2)
 
-    print(f"Styles saved to: {styles_path}")
-
 
 def load_styles() -> Optional[List[Style]]:
     """Load styles from persistent storage. Returns None if no saved styles exist."""
@@ -117,11 +115,10 @@ def load_styles() -> Optional[List[Style]]:
             styles.append(dict_to_style(style_data))
 
         if styles:
-            print(f"Loaded {len(styles)} styles from: {styles_path}")
             return styles
 
-    except (json.JSONDecodeError, TypeError, KeyError) as e:
-        print(f"Warning: Could not load styles: {e}")
+    except (json.JSONDecodeError, TypeError, KeyError):
+        pass  # Return None if loading fails
 
     return None
 

@@ -283,42 +283,63 @@ class CaptionPanel(QWidget):
                 break
 
     def split_subtitle(self) -> None:
-        """Split current subtitle at cursor position."""
-        if not self._current_subtitle:
+        """Split current subtitle at cursor position in the text editor.
+
+        The user selects text or places cursor at split point.
+        Text before cursor becomes first subtitle, text after becomes second.
+        Timing is split proportionally based on character position.
+        """
+        if not self._current_subtitle or not self._project:
             return
 
         cursor = self.text_edit.textCursor()
         pos = cursor.position()
         text = self._current_subtitle.text
 
-        if 0 < pos < len(text):
-            # Split text
-            text1 = text[:pos].strip()
-            text2 = text[pos:].strip()
+        # Must have cursor in the middle of text (not at start or end)
+        if pos <= 0 or pos >= len(text):
+            return
 
-            if text1 and text2:
-                # Calculate split time
-                ratio = pos / len(text)
-                duration = self._current_subtitle.end_ms - self._current_subtitle.start_ms
-                split_time = self._current_subtitle.start_ms + int(duration * ratio)
+        # Split text at cursor position
+        text1 = text[:pos].strip()
+        text2 = text[pos:].strip()
 
-                # Modify current subtitle
-                self._current_subtitle.text = text1
-                self._current_subtitle.end_ms = split_time
+        # Both parts must have content
+        if not text1 or not text2:
+            return
 
-                # Create new subtitle
-                new_subtitle = Subtitle(
-                    start_ms=split_time,
-                    end_ms=self._current_subtitle.end_ms + int(duration * (1 - ratio)),
-                    text=text2,
-                    style_id=self._current_subtitle.style_id
-                )
+        # Store original timing before modification
+        original_start = self._current_subtitle.start_ms
+        original_end = self._current_subtitle.end_ms
+        duration = original_end - original_start
 
-                if self._project:
-                    self._project.add_subtitle(new_subtitle)
+        # Calculate split time based on character ratio
+        ratio = pos / len(text)
+        split_time = original_start + int(duration * ratio)
 
-                self._update_subtitle_list()
-                self.subtitle_changed.emit(self._current_subtitle)
+        # Clear words from current subtitle (they need to be regenerated)
+        self._current_subtitle.words = []
+
+        # Modify current subtitle (first half)
+        self._current_subtitle.text = text1
+        self._current_subtitle.end_ms = split_time
+
+        # Create new subtitle (second half)
+        new_subtitle = Subtitle(
+            start_ms=split_time,
+            end_ms=original_end,
+            text=text2,
+            style_id=self._current_subtitle.style_id
+        )
+
+        # Add new subtitle to project
+        self._project.add_subtitle(new_subtitle)
+
+        # Update UI
+        self._update_subtitle_list()
+        self._update_editor()
+        self.subtitle_changed.emit(self._current_subtitle)
+        self.subtitles_changed.emit([self._current_subtitle, new_subtitle])
 
     def merge_subtitles(self) -> None:
         """Merge selected subtitles."""

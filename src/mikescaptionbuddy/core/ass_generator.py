@@ -209,50 +209,18 @@ class ASSGenerator:
         return lines
 
     def _apply_karaoke_effect(self, subtitle: Subtitle, style: Optional[Style]) -> str:
-        """Apply karaoke timing effects to subtitle words."""
+        """Apply karaoke timing effects to subtitle words.
+
+        All karaoke modes now highlight the CURRENT word in karaoke color.
+        - highlight: instant color change, stays highlighted after spoken
+        - fill: gradual color change, stays highlighted after spoken
+        - outline: affects outline color
+        - wbw: only current word highlighted, others in primary color
+        """
         if not subtitle.words:
             return subtitle.get_full_text()
 
         karaoke_style = style.karaoke_style if style else "none"
-        karaoke_color = style.karaoke_color if style else "#FFFF00"
-        primary_color = style.primary_color if style else "#FFFFFF"
-
-        # Handle WBW (Word By Word) karaoke - highlight only current word
-        if karaoke_style == "wbw":
-            return self._apply_wbw_karaoke(subtitle, style)
-
-        # Map karaoke style to ASS tag
-        # \k = hard fill (syllable by syllable)
-        # \kf or \K = smooth fill
-        # \ko = outline fill
-        karaoke_tags = {
-            "highlight": "\\k",     # Hard fill (changes color instantly)
-            "fill": "\\kf",         # Smooth fill (gradual color change)
-            "outline": "\\ko",      # Outline fill
-        }
-
-        tag = karaoke_tags.get(karaoke_style, "\\k")
-        parts = []
-
-        # Calculate base time for karaoke (relative to subtitle start)
-        subtitle_start = subtitle.start_ms
-
-        for word in subtitle.words:
-            # Duration in centiseconds (ASS karaoke uses centiseconds)
-            duration_cs = (word.end_ms - word.start_ms) // 10
-
-            # For karaoke, we use the secondary color for highlighting
-            # The tag format is: {tag}{duration}text
-            # The duration is how long the word takes to "fill"
-            parts.append(f"{{{tag}{duration_cs}}}{word.text}")
-
-        return " ".join(parts)
-
-    def _apply_wbw_karaoke(self, subtitle: Subtitle, style: Optional[Style]) -> str:
-        """Apply Word-By-Word karaoke - highlight only the current word."""
-        if not subtitle.words:
-            return subtitle.get_full_text()
-
         karaoke_color = style.karaoke_color if style else "#FFFF00"
         primary_color = style.primary_color if style else "#FFFFFF"
 
@@ -268,25 +236,63 @@ class ASSGenerator:
             word_start_rel = word.start_ms - subtitle_start
             word_end_rel = word.end_ms - subtitle_start
 
-            # Use \t (transform) to animate color changes
-            # Format: \t(start,end,\c&HBBGGRR&)
-            # Start with primary color, transform to karaoke at word start,
-            # transform back to primary at word end
-            if word_start_rel > 0:
-                # Word starts after subtitle start - use transform
-                tags = (
-                    f"\\c{primary_ass}"  # Start with primary color
-                    f"\\t({word_start_rel},{word_start_rel},\\c{karaoke_ass})"  # Change to karaoke at word start
-                    f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"  # Change back at word end
-                )
-            else:
-                # Word starts at subtitle start
-                tags = (
-                    f"\\c{karaoke_ass}"  # Start with karaoke color
-                    f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"  # Change back at word end
-                )
+            if karaoke_style == "wbw":
+                # WBW: Only current word highlighted, returns to primary after
+                if word_start_rel > 0:
+                    tags = (
+                        f"\\c{primary_ass}"
+                        f"\\t({word_start_rel},{word_start_rel},\\c{karaoke_ass})"
+                        f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"
+                    )
+                else:
+                    tags = (
+                        f"\\c{karaoke_ass}"
+                        f"\\t({word_end_rel},{word_end_rel},\\c{primary_ass})"
+                    )
 
-            parts.append(f"{{{tags}}}{word.text}")
+            elif karaoke_style == "highlight":
+                # Highlight: Instant change to karaoke color, stays highlighted
+                if word_start_rel > 0:
+                    tags = (
+                        f"\\c{primary_ass}"
+                        f"\\t({word_start_rel},{word_start_rel},\\c{karaoke_ass})"
+                    )
+                else:
+                    # First word starts highlighted
+                    tags = f"\\c{karaoke_ass}"
+
+            elif karaoke_style == "fill":
+                # Fill: Gradual fill to karaoke color over word duration, stays highlighted
+                if word_start_rel > 0:
+                    tags = (
+                        f"\\c{primary_ass}"
+                        f"\\t({word_start_rel},{word_end_rel},\\c{karaoke_ass})"
+                    )
+                else:
+                    # First word fills from start
+                    tags = (
+                        f"\\c{primary_ass}"
+                        f"\\t(0,{word_end_rel},\\c{karaoke_ass})"
+                    )
+
+            elif karaoke_style == "outline":
+                # Outline: Change outline color instead of primary
+                if word_start_rel > 0:
+                    tags = (
+                        f"\\3c{self._hex_to_ass_color(style.outline_color) if style else primary_ass}"
+                        f"\\t({word_start_rel},{word_start_rel},\\3c{karaoke_ass})"
+                    )
+                else:
+                    tags = f"\\3c{karaoke_ass}"
+
+            else:
+                # Default: no karaoke effect
+                tags = ""
+
+            if tags:
+                parts.append(f"{{{tags}}}{word.text}")
+            else:
+                parts.append(word.text)
 
         return " ".join(parts)
 

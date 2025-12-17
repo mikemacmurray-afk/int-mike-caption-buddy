@@ -298,6 +298,7 @@ class MainWindow(QMainWindow):
 
         # Caption panel signals
         self.caption_panel.subtitle_changed.connect(self._on_subtitle_changed)
+        self.caption_panel.subtitles_changed.connect(self._on_subtitles_changed)
         self.caption_panel.word_style_changed.connect(self._on_word_style_changed)
         self.caption_panel.subtitles_selected.connect(self._on_caption_selection_changed)
 
@@ -603,9 +604,19 @@ class MainWindow(QMainWindow):
             self.settings,
             self
         )
+        # Connect styles_updated signal to refresh UI
+        dialog.styles_updated.connect(self._on_styles_updated)
         dialog.exec()
-        # Update captions in case styles were changed
-        self.video_panel.update_captions()
+
+    @Slot()
+    def _on_styles_updated(self) -> None:
+        """Handle styles updated from styles manager."""
+        # Update caption panel's style dropdown
+        self.caption_panel._update_style_combo()
+        # Refresh subtitles on video (regenerate ASS file)
+        self.video_panel.refresh_subtitles()
+        # Mark project as modified
+        self.project_manager.mark_modified()
 
     @Slot()
     def _on_settings(self) -> None:
@@ -725,13 +736,20 @@ class MainWindow(QMainWindow):
     def _on_subtitle_changed(self, subtitle) -> None:
         """Handle subtitle content change."""
         self.timeline_panel.update_subtitle(subtitle)
-        self.video_panel.update_captions()
+        self.video_panel.refresh_subtitles()
+        self.project_manager.mark_modified()
+
+    @Slot(list)
+    def _on_subtitles_changed(self, subtitles: list) -> None:
+        """Handle multiple subtitles changed (e.g., Apply to Selected)."""
+        self.timeline_panel.update_subtitles()
+        self.video_panel.refresh_subtitles()
         self.project_manager.mark_modified()
 
     @Slot(int, int, dict)
     def _on_word_style_changed(self, subtitle_id: int, word_index: int, style: dict) -> None:
         """Handle word style change."""
-        self.video_panel.update_captions()
+        self.video_panel.refresh_subtitles()
         self.project_manager.mark_modified()
 
     @Slot(object, int, int, int, int)

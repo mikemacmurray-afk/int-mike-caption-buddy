@@ -1,4 +1,4 @@
-"""Video preview panel with playback controls."""
+"""Video preview panel with playback controls and ASS subtitle rendering."""
 
 import os
 import sys
@@ -10,14 +10,17 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer
 
+from ..core.ass_generator import ASSGenerator
+
 
 class VideoPanel(QWidget):
-    """Video preview panel with mpv player and playback controls."""
+    """Video preview panel with mpv player and ASS subtitle rendering."""
 
     # Signals
     position_changed = Signal(int)  # position in ms
     duration_changed = Signal(int)  # duration in ms
     playback_state_changed = Signal(bool)  # playing
+    subtitles_need_refresh = Signal()  # emitted when subtitles should be regenerated
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,9 +34,9 @@ class VideoPanel(QWidget):
         self._captions_visible = True
         self._mpv_initialized = False
         self._project = None
-        self._v_align = "bottom"
-        self._h_align = "center"
-        self._current_caption_text = ""
+        self._current_ass_path: Optional[str] = None
+        self._ass_generator = ASSGenerator()
+        self._subtitle_track_id: Optional[int] = None
 
         self._setup_ui()
         self._setup_timer()
@@ -62,7 +65,7 @@ class VideoPanel(QWidget):
 
         layout.addWidget(self.video_container, 1)
 
-        # Caption display bar (shows current caption text for reference)
+        # Caption info bar (shows current caption text for reference)
         self.caption_bar = QLabel("")
         self.caption_bar.setAlignment(Qt.AlignCenter)
         self.caption_bar.setWordWrap(True)
@@ -79,30 +82,6 @@ class VideoPanel(QWidget):
         """)
         self.caption_bar.hide()
         layout.addWidget(self.caption_bar)
-
-        # Alignment controls bar
-        align_widget = QWidget()
-        align_layout = QHBoxLayout(align_widget)
-        align_layout.setContentsMargins(4, 2, 4, 2)
-
-        align_layout.addWidget(QLabel("Caption Position:"))
-
-        self.v_align_combo = QComboBox()
-        self.v_align_combo.addItems(["Top", "Middle", "Bottom"])
-        self.v_align_combo.setCurrentIndex(2)  # Default: Bottom
-        self.v_align_combo.setToolTip("Vertical alignment")
-        self.v_align_combo.currentTextChanged.connect(self._on_v_align_changed)
-        align_layout.addWidget(self.v_align_combo)
-
-        self.h_align_combo = QComboBox()
-        self.h_align_combo.addItems(["Left", "Center", "Right"])
-        self.h_align_combo.setCurrentIndex(1)  # Default: Center
-        self.h_align_combo.setToolTip("Horizontal alignment")
-        self.h_align_combo.currentTextChanged.connect(self._on_h_align_changed)
-        align_layout.addWidget(self.h_align_combo)
-
-        align_layout.addStretch()
-        layout.addWidget(align_widget)
 
         # Controls container
         controls_widget = QWidget()
@@ -159,6 +138,13 @@ class VideoPanel(QWidget):
         self.btn_captions.clicked.connect(self._on_captions_toggled)
         controls_layout.addWidget(self.btn_captions)
 
+        # Refresh subtitles button
+        self.btn_refresh = QPushButton("↻")
+        self.btn_refresh.setFixedWidth(40)
+        self.btn_refresh.setToolTip("Refresh Subtitles")
+        self.btn_refresh.clicked.connect(self.refresh_subtitles)
+        controls_layout.addWidget(self.btn_refresh)
+
         layout.addWidget(controls_widget)
 
         # Initially disable controls
@@ -199,21 +185,15 @@ class VideoPanel(QWidget):
                     'osc': 'no',
                     'input_default_bindings': 'no',
                     'input_vo_keyboard': 'no',
-                    # OSD settings for caption display
-                    'osd_level': 1,
-                    'osd_duration': 10000,  # Long duration, we'll update it
+                    # Subtitle rendering options
+                    'sub_visibility': True,
+                    'sub_ass': True,  # Enable ASS subtitle rendering
+                    'sub_ass_override': 'no',  # Don't override ASS styles
                 }
                 if vo:
                     mpv_opts['vo'] = vo
 
                 self._mpv_player = mpv.MPV(**mpv_opts)
-
-                # Configure OSD styling for captions
-                self._mpv_player['osd-font-size'] = 48
-                self._mpv_player['osd-color'] = '#FFFFFF'
-                self._mpv_player['osd-border-color'] = '#000000'
-                self._mpv_player['osd-border-size'] = 3
-                self._mpv_player['osd-shadow-offset'] = 2
 
                 # Setup event handlers
                 @self._mpv_player.property_observer('time-pos')
@@ -227,6 +207,8 @@ class VideoPanel(QWidget):
                     if value is not None:
                         self._duration_ms = int(value * 1000)
                         self.duration_changed.emit(self._duration_ms)
+                        # Update ASS generator resolution
+                        self._update_ass_resolution()
 
                 @self._mpv_player.property_observer('pause')
                 def pause_observer(name, value):
@@ -251,6 +233,17 @@ class VideoPanel(QWidget):
         self._mpv_player = None
         return False
 
+    def _update_ass_resolution(self) -> None:
+        """Update ASS generator with video resolution."""
+        if self._mpv_player:
+            try:
+                width = self._mpv_player.width
+                height = self._mpv_player.height
+                if width and height:
+                    self._ass_generator.set_resolution(width, height)
+            except:
+                pass
+
     def _setup_timer(self) -> None:
         """Setup update timer for UI sync."""
         self._update_timer = QTimer(self)
@@ -264,6 +257,7 @@ class VideoPanel(QWidget):
         self.seek_slider.setEnabled(enabled)
         self.volume_slider.setEnabled(enabled)
         self.btn_captions.setEnabled(enabled)
+        self.btn_refresh.setEnabled(enabled)
 
     def _update_play_button(self) -> None:
         """Update play button text based on state."""
@@ -283,9 +277,22 @@ class VideoPanel(QWidget):
             slider_pos = int((self._position_ms / self._duration_ms) * 1000)
             self.seek_slider.setValue(slider_pos)
 
-        # Update captions
-        if self._captions_visible:
-            self.update_captions()
+        # Update caption info bar
+        self._update_caption_bar()
+
+    def _update_caption_bar(self) -> None:
+        """Update the caption info bar with current subtitle text."""
+        if not self._captions_visible or not self._project:
+            self.caption_bar.hide()
+            return
+
+        # Find subtitle at current position
+        subtitle = self._project.get_subtitle_at_time(self._position_ms)
+        if subtitle:
+            self.caption_bar.setText(subtitle.get_full_text())
+            self.caption_bar.show()
+        else:
+            self.caption_bar.hide()
 
     def _format_time(self, ms: int) -> str:
         """Format milliseconds as HH:MM:SS."""
@@ -293,56 +300,6 @@ class VideoPanel(QWidget):
         m = s // 60
         h = m // 60
         return f"{h:02d}:{m % 60:02d}:{s % 60:02d}"
-
-    def _show_osd_caption(self, text: str, style: dict = None) -> None:
-        """Display caption using MPV's OSD system."""
-        if not self._mpv_player or not text:
-            return
-
-        try:
-            # Configure OSD style based on subtitle style
-            if style:
-                font_size = style.get('font_size', 48)
-                self._mpv_player['osd-font-size'] = font_size
-
-                # Convert hex color to MPV format
-                primary_color = style.get('primary_color', '#FFFFFF')
-                outline_color = style.get('outline_color', '#000000')
-                self._mpv_player['osd-color'] = primary_color
-                self._mpv_player['osd-border-color'] = outline_color
-                self._mpv_player['osd-border-size'] = style.get('outline_width', 3)
-
-            # Calculate OSD alignment based on our alignment settings
-            # MPV OSD align: 0=top-left, 1=top-center, 2=top-right, 3=left, 4=center, 5=right, 6=bottom-left, 7=bottom-center, 8=bottom-right
-            align_map = {
-                ('top', 'left'): 0, ('top', 'center'): 1, ('top', 'right'): 2,
-                ('middle', 'left'): 3, ('middle', 'center'): 4, ('middle', 'right'): 5,
-                ('bottom', 'left'): 6, ('bottom', 'center'): 7, ('bottom', 'right'): 8,
-            }
-            osd_align = align_map.get((self._v_align, self._h_align), 7)
-            self._mpv_player['osd-align-x'] = self._h_align
-            self._mpv_player['osd-align-y'] = self._v_align if self._v_align != 'middle' else 'center'
-
-            # Set margin based on alignment
-            if self._v_align == 'bottom':
-                self._mpv_player['osd-margin-y'] = 50
-            elif self._v_align == 'top':
-                self._mpv_player['osd-margin-y'] = 30
-            else:
-                self._mpv_player['osd-margin-y'] = 0
-
-            # Display the text using show-text command (stays until next update)
-            self._mpv_player.command('show-text', text, '500')  # 500ms, will be refreshed
-        except Exception as e:
-            print(f"Error showing OSD caption: {e}")
-
-    def _clear_osd_caption(self) -> None:
-        """Clear the OSD caption."""
-        if self._mpv_player:
-            try:
-                self._mpv_player.command('show-text', '', '1')
-            except:
-                pass
 
     # Public methods
 
@@ -401,8 +358,68 @@ class VideoPanel(QWidget):
             try:
                 # Seek to start to show first frame
                 self._mpv_player.seek(0, 'absolute')
+                # Load subtitles if project is set
+                if self._project:
+                    self.refresh_subtitles()
             except:
                 pass
+
+    def set_project(self, project) -> None:
+        """Set the project for subtitle display."""
+        self._project = project
+        # Refresh subtitles if video is loaded
+        if self._video_path and self._mpv_player:
+            self.refresh_subtitles()
+
+    def refresh_subtitles(self) -> None:
+        """Regenerate and reload ASS subtitles from project."""
+        if not self._project or not self._mpv_player:
+            return
+
+        try:
+            # Update resolution from video
+            self._update_ass_resolution()
+
+            # Generate new ASS file
+            ass_path = self._ass_generator.save_temp_ass(self._project)
+
+            # Remove existing subtitle track if any
+            if self._subtitle_track_id is not None:
+                try:
+                    self._mpv_player.command('sub-remove', self._subtitle_track_id)
+                except:
+                    pass
+
+            # Load new subtitle file
+            # sub-add <url> [<flags> [<title> [<lang>]]]
+            # flags: select, auto, cached
+            self._mpv_player.command('sub-add', ass_path, 'select')
+
+            # Store the path for later
+            self._current_ass_path = ass_path
+
+            # Get the track ID of the newly added subtitle
+            try:
+                track_list = self._mpv_player.track_list
+                for track in track_list:
+                    if track.get('type') == 'sub' and track.get('selected'):
+                        self._subtitle_track_id = track.get('id')
+                        break
+            except:
+                pass
+
+            # Ensure subtitles are visible
+            if self._captions_visible:
+                self._mpv_player.sub_visibility = True
+
+            print(f"Subtitles loaded from: {ass_path}")
+
+        except Exception as e:
+            print(f"Error refreshing subtitles: {e}")
+
+    def update_captions(self) -> None:
+        """Update caption display - triggers subtitle refresh."""
+        self.refresh_subtitles()
 
     def play(self) -> None:
         """Start playback."""
@@ -435,7 +452,6 @@ class VideoPanel(QWidget):
             self._is_playing = False
             self._update_play_button()
             self.playback_state_changed.emit(False)
-            self._clear_osd_caption()
             self.caption_bar.hide()
 
     def seek(self, position_ms: int) -> None:
@@ -465,77 +481,19 @@ class VideoPanel(QWidget):
         """Toggle caption visibility."""
         self._captions_visible = visible
         self.btn_captions.setChecked(visible)
+        if self._mpv_player:
+            self._mpv_player.sub_visibility = visible
         if not visible:
-            self._clear_osd_caption()
             self.caption_bar.hide()
-            self._current_caption_text = ""
-        else:
-            self.update_captions()
-
-    def set_project(self, project) -> None:
-        """Set the project for caption display."""
-        self._project = project
-
-    def update_captions(self) -> None:
-        """Update caption display based on current position."""
-        if not self._captions_visible or not self._project:
-            self._clear_osd_caption()
-            self.caption_bar.hide()
-            return
-
-        # Find subtitle at current position
-        subtitle = self._project.get_subtitle_at_time(self._position_ms)
-
-        if subtitle:
-            caption_text = subtitle.get_full_text()
-
-            # Only update if text changed (avoid flicker)
-            if caption_text != self._current_caption_text:
-                self._current_caption_text = caption_text
-
-                # Get style
-                style_dict = None
-                if subtitle.style_id and self._project:
-                    style = self._project.get_style_by_id(subtitle.style_id)
-                    if style:
-                        style_dict = {
-                            'font_family': style.font_family,
-                            'font_size': style.font_size,
-                            'primary_color': style.primary_color,
-                            'outline_color': style.outline_color,
-                            'outline_width': style.outline_width,
-                            'background_color': style.background_color,
-                            'background_opacity': style.background_opacity,
-                        }
-
-                # Show caption on video using MPV OSD
-                self._show_osd_caption(caption_text, style_dict)
-
-                # Also show in the caption bar below for reference
-                self.caption_bar.setText(caption_text)
-                self.caption_bar.show()
-        else:
-            if self._current_caption_text:
-                self._current_caption_text = ""
-                self._clear_osd_caption()
-                self.caption_bar.hide()
-
-    def _on_v_align_changed(self, text: str) -> None:
-        """Handle vertical alignment change."""
-        self._v_align = text.lower()
-        self._current_caption_text = ""  # Force update
-        self.update_captions()
-
-    def _on_h_align_changed(self, text: str) -> None:
-        """Handle horizontal alignment change."""
-        self._h_align = text.lower()
-        self._current_caption_text = ""  # Force update
-        self.update_captions()
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
         if self._mpv_player:
             self._mpv_player.fullscreen = not self._mpv_player.fullscreen
+
+    def get_ass_path(self) -> Optional[str]:
+        """Get the path to the current ASS subtitle file."""
+        return self._current_ass_path
 
     def cleanup(self) -> None:
         """Cleanup resources."""
@@ -578,10 +536,9 @@ class VideoPanel(QWidget):
     def _on_captions_toggled(self) -> None:
         """Handle captions toggle."""
         self._captions_visible = self.btn_captions.isChecked()
-        if self._captions_visible:
-            self.update_captions()
-        else:
-            self._clear_osd_caption()
+        if self._mpv_player:
+            self._mpv_player.sub_visibility = self._captions_visible
+        if not self._captions_visible:
             self.caption_bar.hide()
 
     def keyPressEvent(self, event) -> None:

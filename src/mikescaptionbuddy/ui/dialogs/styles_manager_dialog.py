@@ -324,6 +324,12 @@ class StylesManagerDialog(QDialog):
 
         # Buttons
         buttons = QHBoxLayout()
+
+        btn_save = QPushButton("Save")
+        btn_save.setToolTip("Save styles and update style dropdown")
+        btn_save.clicked.connect(self._on_save)
+        buttons.addWidget(btn_save)
+
         buttons.addStretch()
 
         btn_close = QPushButton("Close")
@@ -559,6 +565,13 @@ class StylesManagerDialog(QDialog):
         self.style_list.addItem(item)
         self.style_list.setCurrentItem(item)
         self._on_style_selected(item)
+
+    @Slot()
+    def _on_save(self) -> None:
+        """Handle save button - emit signal to update dropdowns."""
+        self.styles_updated.emit()
+        QMessageBox.information(self, "Styles Saved",
+                              "Project styles have been saved and the style dropdown has been updated.")
 
     @Slot()
     def _on_close(self) -> None:

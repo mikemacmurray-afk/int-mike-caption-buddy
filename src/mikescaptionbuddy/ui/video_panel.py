@@ -8,122 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSlider,
     QLabel, QFrame, QSizePolicy, QApplication, QComboBox
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QRect
-from PySide6.QtGui import QColor, QPalette, QPainter, QFont, QPen, QBrush
-
-
-class CaptionOverlay(QWidget):
-    """Transparent caption overlay for displaying subtitles over video."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        self._text = ""
-        self._v_align = "bottom"  # top, middle, bottom
-        self._h_align = "center"  # left, center, right
-        self._font_family = "Arial"
-        self._font_size = 32
-        self._primary_color = "#FFFFFF"
-        self._outline_color = "#000000"
-        self._outline_width = 2
-        self._background_color = "#000000"
-        self._background_opacity = 0.0
-
-        # Make widget transparent
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-        self.setStyleSheet("background: transparent;")
-
-    def paintEvent(self, event) -> None:
-        """Custom paint to draw text with outline over video."""
-        if not self._text:
-            return
-
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-
-        # Setup font
-        font = QFont(self._font_family, self._font_size)
-        font.setBold(True)
-        painter.setFont(font)
-
-        # Calculate text bounds
-        metrics = painter.fontMetrics()
-        text_width = metrics.horizontalAdvance(self._text)
-        text_height = metrics.height()
-
-        # Calculate position based on alignment
-        margin = 20
-        if self._h_align == "left":
-            x = margin
-        elif self._h_align == "right":
-            x = self.width() - text_width - margin
-        else:  # center
-            x = (self.width() - text_width) // 2
-
-        if self._v_align == "top":
-            y = margin + text_height
-        elif self._v_align == "middle":
-            y = (self.height() + text_height) // 2
-        else:  # bottom
-            y = self.height() - margin
-
-        # Draw semi-transparent background box if enabled
-        if self._background_opacity > 0:
-            bg_rect = QRect(
-                x - 10, y - text_height - 5,
-                text_width + 20, text_height + 15
-            )
-            bg_color = QColor(self._background_color)
-            bg_color.setAlphaF(self._background_opacity)
-            painter.fillRect(bg_rect, bg_color)
-
-        # Draw text outline (draw text multiple times offset for outline effect)
-        outline_color = QColor(self._outline_color)
-        painter.setPen(QPen(outline_color, self._outline_width))
-
-        for dx in range(-self._outline_width, self._outline_width + 1):
-            for dy in range(-self._outline_width, self._outline_width + 1):
-                if dx != 0 or dy != 0:
-                    painter.drawText(x + dx, y + dy, self._text)
-
-        # Draw main text
-        painter.setPen(QColor(self._primary_color))
-        painter.drawText(x, y, self._text)
-
-    def set_caption(self, text: str, style: dict = None) -> None:
-        """Set the caption text and style."""
-        self._text = text
-
-        if style:
-            self._font_family = style.get('font_family', 'Arial')
-            self._font_size = style.get('font_size', 32)
-            self._primary_color = style.get('primary_color', '#FFFFFF')
-            self._outline_color = style.get('outline_color', '#000000')
-            self._outline_width = style.get('outline_width', 2)
-            self._background_color = style.get('background_color', '#000000')
-            self._background_opacity = style.get('background_opacity', 0.0)
-
-        if text:
-            # Match parent size and raise above other widgets
-            if self.parent():
-                self.setGeometry(self.parent().rect())
-            self.raise_()
-            self.show()
-        else:
-            self.hide()
-        self.update()  # Trigger repaint
-
-    def set_alignment(self, v_align: str, h_align: str) -> None:
-        """Set caption alignment."""
-        self._v_align = v_align
-        self._h_align = h_align
-        self.update()
-
-    def clear(self) -> None:
-        """Clear the caption."""
-        self._text = ""
-        self.hide()
+from PySide6.QtCore import Qt, Signal, Slot, QTimer
 
 
 class VideoPanel(QWidget):
@@ -148,6 +33,7 @@ class VideoPanel(QWidget):
         self._project = None
         self._v_align = "bottom"
         self._h_align = "center"
+        self._current_caption_text = ""
 
         self._setup_ui()
         self._setup_timer()
@@ -176,9 +62,23 @@ class VideoPanel(QWidget):
 
         layout.addWidget(self.video_container, 1)
 
-        # Caption overlay (transparent, positioned OVER the video)
-        self.caption_overlay = CaptionOverlay(self.video_container)
-        self.caption_overlay.hide()  # Hidden until there's a caption
+        # Caption display bar (shows current caption text for reference)
+        self.caption_bar = QLabel("")
+        self.caption_bar.setAlignment(Qt.AlignCenter)
+        self.caption_bar.setWordWrap(True)
+        self.caption_bar.setMinimumHeight(40)
+        self.caption_bar.setStyleSheet("""
+            QLabel {
+                color: #FFFFFF;
+                font-family: Arial;
+                font-size: 14px;
+                background-color: #2a2a2a;
+                padding: 8px;
+                border-radius: 4px;
+            }
+        """)
+        self.caption_bar.hide()
+        layout.addWidget(self.caption_bar)
 
         # Alignment controls bar
         align_widget = QWidget()
@@ -299,11 +199,21 @@ class VideoPanel(QWidget):
                     'osc': 'no',
                     'input_default_bindings': 'no',
                     'input_vo_keyboard': 'no',
+                    # OSD settings for caption display
+                    'osd_level': 1,
+                    'osd_duration': 10000,  # Long duration, we'll update it
                 }
                 if vo:
                     mpv_opts['vo'] = vo
 
                 self._mpv_player = mpv.MPV(**mpv_opts)
+
+                # Configure OSD styling for captions
+                self._mpv_player['osd-font-size'] = 48
+                self._mpv_player['osd-color'] = '#FFFFFF'
+                self._mpv_player['osd-border-color'] = '#000000'
+                self._mpv_player['osd-border-size'] = 3
+                self._mpv_player['osd-shadow-offset'] = 2
 
                 # Setup event handlers
                 @self._mpv_player.property_observer('time-pos')
@@ -373,12 +283,66 @@ class VideoPanel(QWidget):
             slider_pos = int((self._position_ms / self._duration_ms) * 1000)
             self.seek_slider.setValue(slider_pos)
 
+        # Update captions
+        if self._captions_visible:
+            self.update_captions()
+
     def _format_time(self, ms: int) -> str:
         """Format milliseconds as HH:MM:SS."""
         s = ms // 1000
         m = s // 60
         h = m // 60
         return f"{h:02d}:{m % 60:02d}:{s % 60:02d}"
+
+    def _show_osd_caption(self, text: str, style: dict = None) -> None:
+        """Display caption using MPV's OSD system."""
+        if not self._mpv_player or not text:
+            return
+
+        try:
+            # Configure OSD style based on subtitle style
+            if style:
+                font_size = style.get('font_size', 48)
+                self._mpv_player['osd-font-size'] = font_size
+
+                # Convert hex color to MPV format
+                primary_color = style.get('primary_color', '#FFFFFF')
+                outline_color = style.get('outline_color', '#000000')
+                self._mpv_player['osd-color'] = primary_color
+                self._mpv_player['osd-border-color'] = outline_color
+                self._mpv_player['osd-border-size'] = style.get('outline_width', 3)
+
+            # Calculate OSD alignment based on our alignment settings
+            # MPV OSD align: 0=top-left, 1=top-center, 2=top-right, 3=left, 4=center, 5=right, 6=bottom-left, 7=bottom-center, 8=bottom-right
+            align_map = {
+                ('top', 'left'): 0, ('top', 'center'): 1, ('top', 'right'): 2,
+                ('middle', 'left'): 3, ('middle', 'center'): 4, ('middle', 'right'): 5,
+                ('bottom', 'left'): 6, ('bottom', 'center'): 7, ('bottom', 'right'): 8,
+            }
+            osd_align = align_map.get((self._v_align, self._h_align), 7)
+            self._mpv_player['osd-align-x'] = self._h_align
+            self._mpv_player['osd-align-y'] = self._v_align if self._v_align != 'middle' else 'center'
+
+            # Set margin based on alignment
+            if self._v_align == 'bottom':
+                self._mpv_player['osd-margin-y'] = 50
+            elif self._v_align == 'top':
+                self._mpv_player['osd-margin-y'] = 30
+            else:
+                self._mpv_player['osd-margin-y'] = 0
+
+            # Display the text using show-text command (stays until next update)
+            self._mpv_player.command('show-text', text, '500')  # 500ms, will be refreshed
+        except Exception as e:
+            print(f"Error showing OSD caption: {e}")
+
+    def _clear_osd_caption(self) -> None:
+        """Clear the OSD caption."""
+        if self._mpv_player:
+            try:
+                self._mpv_player.command('show-text', '', '1')
+            except:
+                pass
 
     # Public methods
 
@@ -471,6 +435,8 @@ class VideoPanel(QWidget):
             self._is_playing = False
             self._update_play_button()
             self.playback_state_changed.emit(False)
+            self._clear_osd_caption()
+            self.caption_bar.hide()
 
     def seek(self, position_ms: int) -> None:
         """Seek to position in milliseconds."""
@@ -500,7 +466,9 @@ class VideoPanel(QWidget):
         self._captions_visible = visible
         self.btn_captions.setChecked(visible)
         if not visible:
-            self.caption_overlay.clear()
+            self._clear_osd_caption()
+            self.caption_bar.hide()
+            self._current_caption_text = ""
         else:
             self.update_captions()
 
@@ -511,41 +479,58 @@ class VideoPanel(QWidget):
     def update_captions(self) -> None:
         """Update caption display based on current position."""
         if not self._captions_visible or not self._project:
-            self.caption_overlay.clear()
+            self._clear_osd_caption()
+            self.caption_bar.hide()
             return
 
         # Find subtitle at current position
         subtitle = self._project.get_subtitle_at_time(self._position_ms)
 
         if subtitle:
-            # Get style
-            style_dict = None
-            if subtitle.style_id and self._project:
-                style = self._project.get_style_by_id(subtitle.style_id)
-                if style:
-                    style_dict = {
-                        'font_family': style.font_family,
-                        'font_size': style.font_size,
-                        'primary_color': style.primary_color,
-                        'outline_color': style.outline_color,
-                        'outline_width': style.outline_width,
-                        'background_color': style.background_color,
-                        'background_opacity': style.background_opacity,
-                    }
+            caption_text = subtitle.get_full_text()
 
-            self.caption_overlay.set_caption(subtitle.get_full_text(), style_dict)
+            # Only update if text changed (avoid flicker)
+            if caption_text != self._current_caption_text:
+                self._current_caption_text = caption_text
+
+                # Get style
+                style_dict = None
+                if subtitle.style_id and self._project:
+                    style = self._project.get_style_by_id(subtitle.style_id)
+                    if style:
+                        style_dict = {
+                            'font_family': style.font_family,
+                            'font_size': style.font_size,
+                            'primary_color': style.primary_color,
+                            'outline_color': style.outline_color,
+                            'outline_width': style.outline_width,
+                            'background_color': style.background_color,
+                            'background_opacity': style.background_opacity,
+                        }
+
+                # Show caption on video using MPV OSD
+                self._show_osd_caption(caption_text, style_dict)
+
+                # Also show in the caption bar below for reference
+                self.caption_bar.setText(caption_text)
+                self.caption_bar.show()
         else:
-            self.caption_overlay.clear()
+            if self._current_caption_text:
+                self._current_caption_text = ""
+                self._clear_osd_caption()
+                self.caption_bar.hide()
 
     def _on_v_align_changed(self, text: str) -> None:
         """Handle vertical alignment change."""
         self._v_align = text.lower()
-        self.caption_overlay.set_alignment(self._v_align, self._h_align)
+        self._current_caption_text = ""  # Force update
+        self.update_captions()
 
     def _on_h_align_changed(self, text: str) -> None:
         """Handle horizontal alignment change."""
         self._h_align = text.lower()
-        self.caption_overlay.set_alignment(self._v_align, self._h_align)
+        self._current_caption_text = ""  # Force update
+        self.update_captions()
 
     def toggle_fullscreen(self) -> None:
         """Toggle fullscreen mode."""
@@ -596,14 +581,8 @@ class VideoPanel(QWidget):
         if self._captions_visible:
             self.update_captions()
         else:
-            self.caption_overlay.clear()
-
-    def resizeEvent(self, event) -> None:
-        """Handle resize to reposition caption overlay."""
-        super().resizeEvent(event)
-        # Update caption overlay size to match video container
-        if hasattr(self, 'caption_overlay'):
-            self.caption_overlay.setGeometry(self.video_container.rect())
+            self._clear_osd_caption()
+            self.caption_bar.hide()
 
     def keyPressEvent(self, event) -> None:
         """Handle key press events."""

@@ -57,12 +57,14 @@ class TranscriptionWorker(QThread):
     finished = Signal(list)  # list of subtitles
     error = Signal(str)  # error message
 
-    def __init__(self, audio_path: str, model: str, language: str, cache_dir: str = None):
+    def __init__(self, audio_path: str, model: str, language: str,
+                 cache_dir: str = None, max_words: int = 0):
         super().__init__()
         self.audio_path = audio_path
         self.model = model
         self.language = language
         self.cache_dir = cache_dir or get_whisper_cache_dir()
+        self.max_words = max_words  # 0 = no limit
         self._cancelled = False
 
     def run(self) -> None:
@@ -130,6 +132,11 @@ class TranscriptionWorker(QThread):
 
                 subtitles.append(subtitle)
 
+            # Post-process: Split long subtitles if max_words is set
+            if self.max_words > 0:
+                self.progress.emit(90, f"Splitting long subtitles (max {self.max_words} words)...")
+                subtitles = self._split_long_subtitles(subtitles)
+
             self.progress.emit(100, "Done!")
             self.finished.emit(subtitles)
 
@@ -137,6 +144,55 @@ class TranscriptionWorker(QThread):
             self.error.emit("Whisper is not installed. Please install openai-whisper.")
         except Exception as e:
             self.error.emit(f"Transcription failed: {str(e)}")
+
+    def _split_long_subtitles(self, subtitles: list) -> list:
+        """Split subtitles that exceed max_words into multiple subtitles."""
+        from ...core.models import Word
+
+        result = []
+        subtitle_id = 1
+
+        for subtitle in subtitles:
+            if not subtitle.words or len(subtitle.words) <= self.max_words:
+                subtitle.id = subtitle_id
+                result.append(subtitle)
+                subtitle_id += 1
+                continue
+
+            # Split into chunks of max_words
+            words = subtitle.words
+            for chunk_start in range(0, len(words), self.max_words):
+                chunk_end = min(chunk_start + self.max_words, len(words))
+                chunk_words = words[chunk_start:chunk_end]
+
+                if not chunk_words:
+                    continue
+
+                # Create new subtitle for this chunk
+                new_subtitle = Subtitle(
+                    id=subtitle_id,
+                    start_ms=chunk_words[0].start_ms,
+                    end_ms=chunk_words[-1].end_ms,
+                    text=" ".join(w.text for w in chunk_words),
+                    style_id=subtitle.style_id
+                )
+
+                # Add words with updated indices
+                new_subtitle.words = []
+                for j, word in enumerate(chunk_words):
+                    new_word = Word(
+                        subtitle_id=subtitle_id,
+                        word_index=j,
+                        text=word.text,
+                        start_ms=word.start_ms,
+                        end_ms=word.end_ms
+                    )
+                    new_subtitle.words.append(new_word)
+
+                result.append(new_subtitle)
+                subtitle_id += 1
+
+        return result
 
     def cancel(self) -> None:
         """Cancel the transcription."""
@@ -153,13 +209,25 @@ class TranscribeDialog(QDialog):
         self.worker: Optional[TranscriptionWorker] = None
         self.cache_dir = get_whisper_cache_dir()
 
+        # Detect if portrait video
+        self.is_portrait = self._detect_portrait_video()
+
         self._setup_ui()
         self._check_available_models()
+
+    def _detect_portrait_video(self) -> bool:
+        """Detect if the video is portrait (height > width)."""
+        if self.project.video_info:
+            width = self.project.video_info.width or 0
+            height = self.project.video_info.height or 0
+            if width > 0 and height > 0:
+                return height > width
+        return False
 
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
         self.setWindowTitle("Transcribe with Whisper")
-        self.setMinimumSize(500, 420)
+        self.setMinimumSize(520, 580)
 
         layout = QVBoxLayout(self)
 
@@ -194,6 +262,45 @@ class TranscribeDialog(QDialog):
         settings_form.addRow("Language:", self.combo_language)
 
         layout.addWidget(settings_group)
+
+        # Subtitle Options group
+        subtitle_group = QGroupBox("Subtitle Options")
+        subtitle_form = QFormLayout(subtitle_group)
+
+        # Max words per subtitle
+        self.combo_max_words = QComboBox()
+        self.combo_max_words.addItem("No limit (Whisper default)", 0)
+        self.combo_max_words.addItem("3 words (very short - large text)", 3)
+        self.combo_max_words.addItem("5 words (short - larger text)", 5)
+        self.combo_max_words.addItem("7 words (medium)", 7)
+        self.combo_max_words.addItem("10 words (long)", 10)
+
+        # Auto-select based on portrait/landscape
+        if self.is_portrait:
+            self.combo_max_words.setCurrentIndex(2)  # 5 words for portrait
+        else:
+            self.combo_max_words.setCurrentIndex(0)  # No limit for landscape
+
+        subtitle_form.addRow("Max words/subtitle:", self.combo_max_words)
+
+        # Portrait detection info
+        orientation = "Portrait" if self.is_portrait else "Landscape"
+        width = self.project.video_info.width if self.project.video_info else 0
+        height = self.project.video_info.height if self.project.video_info else 0
+        orientation_label = QLabel(f"Video: {width}x{height} ({orientation})")
+        orientation_label.setStyleSheet("color: #666; font-style: italic;")
+        subtitle_form.addRow("", orientation_label)
+
+        # Tip
+        tip_label = QLabel(
+            "Tip: Use shorter subtitles (3-5 words) for portrait videos\n"
+            "or when you want larger, more impactful text."
+        )
+        tip_label.setStyleSheet("color: #888; font-size: 10px;")
+        tip_label.setWordWrap(True)
+        subtitle_form.addRow("", tip_label)
+
+        layout.addWidget(subtitle_group)
 
         # Model cache location
         cache_group = QGroupBox("Whisper Model Location")
@@ -302,16 +409,20 @@ class TranscribeDialog(QDialog):
         self.btn_transcribe.setEnabled(False)
         self.combo_model.setEnabled(False)
         self.combo_language.setEnabled(False)
+        self.combo_max_words.setEnabled(False)
 
-        # Start worker
+        # Get settings
         model = self.combo_model.currentData()
         language = self.combo_language.currentData()
+        max_words = self.combo_max_words.currentData()
 
+        # Start worker
         self.worker = TranscriptionWorker(
             self.project.video_path,
             model,
             language,
-            self.cache_dir
+            self.cache_dir,
+            max_words
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -375,6 +486,7 @@ class TranscribeDialog(QDialog):
         self.btn_transcribe.setEnabled(True)
         self.combo_model.setEnabled(True)
         self.combo_language.setEnabled(True)
+        self.combo_max_words.setEnabled(True)
         self.progress_bar.setValue(0)
         self.status_label.setText("Ready to transcribe")
 

@@ -7,7 +7,7 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QProgressBar, QTextEdit, QGroupBox, QFormLayout,
-    QMessageBox, QLineEdit, QFileDialog
+    QMessageBox, QLineEdit, QFileDialog, QCheckBox
 )
 from PySide6.QtCore import Qt, QThread, Signal
 
@@ -58,13 +58,14 @@ class TranscriptionWorker(QThread):
     error = Signal(str)  # error message
 
     def __init__(self, audio_path: str, model: str, language: str,
-                 cache_dir: str = None, max_words: int = 0):
+                 cache_dir: str = None, max_words: int = 0, sentence_break: bool = False):
         super().__init__()
         self.audio_path = audio_path
         self.model = model
         self.language = language
         self.cache_dir = cache_dir or get_whisper_cache_dir()
         self.max_words = max_words  # 0 = no limit
+        self.sentence_break = sentence_break  # Break at sentence boundaries
         self._cancelled = False
 
     def run(self) -> None:
@@ -132,10 +133,10 @@ class TranscriptionWorker(QThread):
 
                 subtitles.append(subtitle)
 
-            # Post-process: Split long subtitles if max_words is set
-            if self.max_words > 0:
-                self.progress.emit(90, f"Splitting long subtitles (max {self.max_words} words)...")
-                subtitles = self._split_long_subtitles(subtitles)
+            # Post-process: Split subtitles based on options
+            if self.sentence_break or self.max_words > 0:
+                self.progress.emit(90, "Processing subtitle segments...")
+                subtitles = self._split_subtitles(subtitles)
 
             self.progress.emit(100, "Done!")
             self.finished.emit(subtitles)
@@ -145,26 +146,25 @@ class TranscriptionWorker(QThread):
         except Exception as e:
             self.error.emit(f"Transcription failed: {str(e)}")
 
-    def _split_long_subtitles(self, subtitles: list) -> list:
-        """Split subtitles that exceed max_words into multiple subtitles."""
+    def _split_subtitles(self, subtitles: list) -> list:
+        """Split subtitles based on sentence breaks and/or max words."""
         from ...core.models import Word
 
         result = []
         subtitle_id = 1
 
         for subtitle in subtitles:
-            if not subtitle.words or len(subtitle.words) <= self.max_words:
+            if not subtitle.words:
+                # No word-level data, just add as-is
                 subtitle.id = subtitle_id
                 result.append(subtitle)
                 subtitle_id += 1
                 continue
 
-            # Split into chunks of max_words
-            words = subtitle.words
-            for chunk_start in range(0, len(words), self.max_words):
-                chunk_end = min(chunk_start + self.max_words, len(words))
-                chunk_words = words[chunk_start:chunk_end]
+            # Get word chunks based on options
+            word_chunks = self._get_word_chunks(subtitle.words)
 
+            for chunk_words in word_chunks:
                 if not chunk_words:
                     continue
 
@@ -193,6 +193,43 @@ class TranscriptionWorker(QThread):
                 subtitle_id += 1
 
         return result
+
+    def _get_word_chunks(self, words: list) -> list:
+        """Split words into chunks based on sentence breaks and max words."""
+        if not words:
+            return []
+
+        chunks = []
+        current_chunk = []
+
+        for word in words:
+            current_chunk.append(word)
+
+            # Check if this word ends a sentence (has sentence-ending punctuation)
+            is_sentence_end = False
+            if self.sentence_break:
+                text = word.text.strip()
+                is_sentence_end = text.endswith('.') or text.endswith('!') or text.endswith('?')
+
+            # Check if we should start a new chunk
+            should_break = False
+
+            if is_sentence_end:
+                # Always break at sentence end if sentence_break is enabled
+                should_break = True
+            elif self.max_words > 0 and len(current_chunk) >= self.max_words:
+                # Break at max_words limit
+                should_break = True
+
+            if should_break and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = []
+
+        # Don't forget the last chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+
+        return chunks
 
     def cancel(self) -> None:
         """Cancel the transcription."""
@@ -227,7 +264,7 @@ class TranscribeDialog(QDialog):
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
         self.setWindowTitle("Transcribe with Whisper")
-        self.setMinimumSize(520, 580)
+        self.setMinimumSize(520, 620)
 
         layout = QVBoxLayout(self)
 
@@ -282,6 +319,15 @@ class TranscribeDialog(QDialog):
             self.combo_max_words.setCurrentIndex(0)  # No limit for landscape
 
         subtitle_form.addRow("Max words/subtitle:", self.combo_max_words)
+
+        # Sentence break option
+        self.check_sentence_break = QCheckBox("Break at sentence boundaries (. ! ?)")
+        self.check_sentence_break.setToolTip(
+            "Start a new subtitle after each sentence.\n"
+            "If enabled, subtitles will end at full stops, exclamation marks, or question marks.\n"
+            "This works together with max words - whichever limit is reached first."
+        )
+        subtitle_form.addRow("Sentence Break:", self.check_sentence_break)
 
         # Portrait detection info
         orientation = "Portrait" if self.is_portrait else "Landscape"
@@ -410,11 +456,13 @@ class TranscribeDialog(QDialog):
         self.combo_model.setEnabled(False)
         self.combo_language.setEnabled(False)
         self.combo_max_words.setEnabled(False)
+        self.check_sentence_break.setEnabled(False)
 
         # Get settings
         model = self.combo_model.currentData()
         language = self.combo_language.currentData()
         max_words = self.combo_max_words.currentData()
+        sentence_break = self.check_sentence_break.isChecked()
 
         # Start worker
         self.worker = TranscriptionWorker(
@@ -422,7 +470,8 @@ class TranscribeDialog(QDialog):
             model,
             language,
             self.cache_dir,
-            max_words
+            max_words,
+            sentence_break
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
@@ -487,6 +536,7 @@ class TranscribeDialog(QDialog):
         self.combo_model.setEnabled(True)
         self.combo_language.setEnabled(True)
         self.combo_max_words.setEnabled(True)
+        self.check_sentence_break.setEnabled(True)
         self.progress_bar.setValue(0)
         self.status_label.setText("Ready to transcribe")
 

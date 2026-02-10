@@ -1,2 +1,4 @@
-cd C:\Work\AI Journey\Caption-Buddy
+@echo off
+cd /d "%~dp0"
 python run.py
+pause

@@ -18,6 +18,8 @@ class Alignment(Enum):
     TOP_CENTER = 8
     TOP_RIGHT = 9
 
+import re
+
 
 @dataclass
 class StyleOverride:
@@ -292,3 +294,17 @@ class Project:
         for i, sub in enumerate(self.subtitles, 1):
             lines.append(sub.to_srt_entry(i))
         return "\n".join(lines)
+
+    def export_to_text(self) -> str:
+        """Export full transcription to plain text with newlines after full stops."""
+        if not self.subtitles:
+            return ""
+
+        # Join all subtitle segments into one continuous text
+        full_text = " ".join(sub.get_full_text() for sub in self.subtitles)
+
+        # Ensure a newline after every full stop
+        # This matches '.' followed by optional whitespace and replaces it with '.\n'
+        formatted_text = re.sub(r'\.\s*', '.\n', full_text)
+
+        return formatted_text.strip()

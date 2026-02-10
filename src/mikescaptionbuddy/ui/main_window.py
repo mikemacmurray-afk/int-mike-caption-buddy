@@ -171,6 +171,11 @@ class MainWindow(QMainWindow):
         self.action_transcribe.setEnabled(False)
         tools_menu.addAction(self.action_transcribe)
 
+        self.action_download_transcription = QAction("&Download Transcription...", self)
+        self.action_download_transcription.triggered.connect(self._on_download_transcription)
+        self.action_download_transcription.setEnabled(False)
+        tools_menu.addAction(self.action_download_transcription)
+
         tools_menu.addSeparator()
 
         self.action_styles_manager = QAction("Style &Presets Manager...", self)
@@ -213,6 +218,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.action_redo)
         toolbar.addSeparator()
         toolbar.addAction(self.action_transcribe)
+        toolbar.addAction(self.action_download_transcription)
         toolbar.addAction(self.action_styles_manager)
         toolbar.addAction(self.action_export_video)
         toolbar.addAction(self.action_export_subtitles)
@@ -345,6 +351,7 @@ class MainWindow(QMainWindow):
         self.action_export_subtitles.setEnabled(enabled)
         self.action_export_video.setEnabled(enabled)
         self.action_transcribe.setEnabled(enabled)
+        self.action_download_transcription.setEnabled(enabled)
         self.action_split.setEnabled(enabled)
         self.action_merge.setEnabled(enabled)
         self.action_shift.setEnabled(enabled)
@@ -595,6 +602,42 @@ class MainWindow(QMainWindow):
             # Update caption overlay on video panel
             self.video_panel.update_captions()
             self.project_manager.mark_modified()
+
+    @Slot()
+    def _on_download_transcription(self) -> None:
+        """Export full transcription to a text file."""
+        if not self.project_manager.current_project:
+            return
+
+        project = self.project_manager.current_project
+        if not project.subtitles:
+            QMessageBox.information(self, "No Transcription", "There is no transcription available to download.")
+            return
+
+        # Get default filename [VideoName]_transcription.txt
+        default_name = f"{project.name}_transcription.txt"
+        
+        # Get save path
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Download Transcription",
+            os.path.join(self.settings.get_export_directory(), default_name),
+            "Text Files (*.txt);;All Files (*)"
+        )
+
+        if not path:
+            return
+
+        try:
+            content = project.export_to_text()
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            self.status_label.setText(f"Transcription downloaded to {os.path.basename(path)}")
+            QMessageBox.information(self, "Download Complete",
+                                   f"Transcription downloaded successfully to:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Download Error", f"Failed to download transcription:\n{str(e)}")
 
     @Slot()
     def _on_styles_manager(self) -> None:

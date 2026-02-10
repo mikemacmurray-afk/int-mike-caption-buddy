@@ -66,6 +66,11 @@ class MainWindow(QMainWindow):
         self.action_open.triggered.connect(self._on_open_video)
         file_menu.addAction(self.action_open)
 
+        self.action_open_project = QAction("Open &Project...", self)
+        self.action_open_project.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        self.action_open_project.triggered.connect(self._on_open_project)
+        file_menu.addAction(self.action_open_project)
+
         self.action_import_audio = QAction("Import &Audio...", self)
         self.action_import_audio.triggered.connect(self._on_import_audio)
         file_menu.addAction(self.action_import_audio)
@@ -212,6 +217,7 @@ class MainWindow(QMainWindow):
         self.addToolBar(toolbar)
 
         toolbar.addAction(self.action_open)
+        toolbar.addAction(self.action_open_project)
         toolbar.addAction(self.action_save)
         toolbar.addSeparator()
         toolbar.addAction(self.action_undo)
@@ -378,6 +384,17 @@ class MainWindow(QMainWindow):
         )
         if path:
             self._load_video(path)
+
+    @Slot()
+    def _on_open_project(self) -> None:
+        """Open a .captionstudio project file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project",
+            "",
+            "Caption Studio Project (*.captionstudio);;All Files (*)"
+        )
+        if path:
+            self._open_recent_file(path)
 
     @Slot()
     def _on_import_audio(self) -> None:

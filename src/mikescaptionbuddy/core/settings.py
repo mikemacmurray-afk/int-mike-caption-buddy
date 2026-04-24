@@ -60,6 +60,7 @@ class Settings:
     # Transcription
     default_whisper_model: str = "medium"
     whisper_language: str = "en"
+    whisper_engine: str = "openai-whisper"  # "openai-whisper" or "openvino"
 
     # Export
     default_export_directory: str = ""

@@ -16,6 +16,8 @@ ffmpeg-python>=0.2.0
 
 # Transcription (uses local Whisper installation)
 openai-whisper>=20231117
+transformers>=4.36.0
+optimum[openvino]>=1.16.0
 
 # Database
 # (SQLite is built into Python)

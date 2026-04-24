@@ -65,6 +65,11 @@ class SettingsDialog(QDialog):
         self.combo_model.addItems(["small", "medium", "large"])
         transcription_form.addRow("Default model:", self.combo_model)
 
+        self.combo_engine = QComboBox()
+        self.combo_engine.addItem("Standard (CPU / NVIDIA CUDA)", "openai-whisper")
+        self.combo_engine.addItem("OpenVINO (Intel CPU / Iris GPU)", "openvino")
+        transcription_form.addRow("Inference Engine:", self.combo_engine)
+
         self.combo_language = QComboBox()
         self.combo_language.addItem("English", "en")
         self.combo_language.addItem("Auto-detect", "auto")
@@ -155,6 +160,10 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self.combo_model.setCurrentIndex(idx)
 
+        idx = self.combo_engine.findData(self.settings.whisper_engine)
+        if idx >= 0:
+            self.combo_engine.setCurrentIndex(idx)
+
         self.edit_export_dir.setText(self.settings.default_export_directory)
 
         idx = self.combo_resolution.findText(self.settings.default_video_resolution)
@@ -186,6 +195,7 @@ class SettingsDialog(QDialog):
         self.settings.show_startup_dialog = self.check_startup.isChecked()
         self.settings.recent_files_limit = self.spin_recent.value()
         self.settings.default_whisper_model = self.combo_model.currentText()
+        self.settings.whisper_engine = self.combo_engine.currentData()
         self.settings.default_export_directory = self.edit_export_dir.text()
         self.settings.default_video_resolution = self.combo_resolution.currentText()
         self.settings.default_quality_preset = self.combo_quality.currentText()

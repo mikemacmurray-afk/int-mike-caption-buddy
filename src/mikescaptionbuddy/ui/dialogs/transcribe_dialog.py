@@ -58,7 +58,8 @@ class TranscriptionWorker(QThread):
     error = Signal(str)  # error message
 
     def __init__(self, audio_path: str, model: str, language: str,
-                 cache_dir: str = None, max_words: int = 0, sentence_break: bool = False):
+                 cache_dir: str = None, max_words: int = 0, sentence_break: bool = False,
+                 engine: str = "openai-whisper"):
         super().__init__()
         self.audio_path = audio_path
         self.model = model
@@ -66,77 +67,156 @@ class TranscriptionWorker(QThread):
         self.cache_dir = cache_dir or get_whisper_cache_dir()
         self.max_words = max_words  # 0 = no limit
         self.sentence_break = sentence_break  # Break at sentence boundaries
+        self.engine = engine
         self._cancelled = False
 
     def run(self) -> None:
         """Run transcription."""
         try:
-            self.progress.emit(0, "Loading Whisper model...")
+            self.progress.emit(0, f"Loading Whisper model ({self.engine})...")
 
-            import whisper
+            if self.engine == "openvino":
+                from transformers import pipeline, AutoProcessor
+                from optimum.intel.openvino import OVModelForSpeechSeq2Seq
 
-            # Check if model exists locally
-            model_exists = check_model_exists(self.model, self.cache_dir)
+                model_id = f"openai/whisper-{self.model}"
+                self.progress.emit(10, f"Loading OpenVINO model {model_id}...")
+                
+                processor = AutoProcessor.from_pretrained(model_id, cache_dir=self.cache_dir)
+                ov_model = OVModelForSpeechSeq2Seq.from_pretrained(model_id, export=True, cache_dir=self.cache_dir)
+                # Ensure it runs on Intel GPU if available, else CPU
+                try:
+                    ov_model.to("GPU")
+                    self.progress.emit(20, "Model loaded on Intel GPU.")
+                except Exception as e:
+                    self.progress.emit(20, "GPU not available for OpenVINO, falling back to CPU.")
+                    ov_model.to("CPU")
 
-            if model_exists:
-                self.progress.emit(10, f"Loading {self.model} model from local cache...")
-            else:
-                self.progress.emit(10, f"Model {self.model} not found locally. Downloading...")
+                if self._cancelled:
+                    return
+                
+                self.progress.emit(30, "Transcribing audio with OpenVINO...")
 
-            # Load model with explicit download directory to use existing cache
-            model = whisper.load_model(
-                self.model,
-                download_root=self.cache_dir
-            )
-
-            if self._cancelled:
-                return
-
-            # Transcribe
-            self.progress.emit(30, "Transcribing audio...")
-
-            result = model.transcribe(
-                self.audio_path,
-                language=self.language if self.language != "auto" else None,
-                word_timestamps=True,
-                verbose=False
-            )
-
-            if self._cancelled:
-                return
-
-            self.progress.emit(80, "Processing segments...")
-
-            # Convert to subtitles
-            subtitles = []
-            for i, segment in enumerate(result.get('segments', [])):
-                subtitle = Subtitle(
-                    id=i + 1,
-                    start_ms=int(segment['start'] * 1000),
-                    end_ms=int(segment['end'] * 1000),
-                    text=segment['text'].strip()
+                pipe = pipeline(
+                    "automatic-speech-recognition",
+                    model=ov_model,
+                    tokenizer=processor.tokenizer,
+                    feature_extractor=processor.feature_extractor,
+                    chunk_length_s=30,
+                    return_timestamps="word",
                 )
+                
+                generate_kwargs = {}
+                if self.language != "auto":
+                    generate_kwargs["language"] = self.language
+                
+                result = pipe(self.audio_path, generate_kwargs=generate_kwargs)
 
-                # Add word-level timing if available
-                if 'words' in segment:
-                    subtitle.words = []
-                    for j, word_data in enumerate(segment['words']):
-                        from ...core.models import Word
-                        word = Word(
-                            subtitle_id=subtitle.id,
-                            word_index=j,
-                            text=word_data.get('word', '').strip(),
-                            start_ms=int(word_data.get('start', 0) * 1000),
-                            end_ms=int(word_data.get('end', 0) * 1000)
-                        )
-                        subtitle.words.append(word)
+                if self._cancelled:
+                    return
 
-                subtitles.append(subtitle)
+                self.progress.emit(80, "Processing OpenVINO segments...")
 
-            # Post-process: Split subtitles based on options
-            if self.sentence_break or self.max_words > 0:
+                subtitles = []
+                from ...core.models import Word
+                dummy_subtitle = Subtitle(id=1, start_ms=0, end_ms=0, text="")
+                dummy_subtitle.words = []
+                
+                for j, chunk in enumerate(result.get('chunks', [])):
+                    start = chunk['timestamp'][0]
+                    end = chunk['timestamp'][1]
+                    if start is None: start = 0
+                    if end is None: end = start + 0.5
+                    
+                    word = Word(
+                        subtitle_id=1,
+                        word_index=j,
+                        text=chunk['text'].strip(),
+                        start_ms=int(start * 1000),
+                        end_ms=int(end * 1000)
+                    )
+                    dummy_subtitle.words.append(word)
+                
+                if dummy_subtitle.words:
+                    dummy_subtitle.start_ms = dummy_subtitle.words[0].start_ms
+                    dummy_subtitle.end_ms = dummy_subtitle.words[-1].end_ms
+                    subtitles.append(dummy_subtitle)
+
+                # Force sentence break if max_words == 0 so we don't get one giant block for the whole video
+                old_sentence_break = self.sentence_break
+                if not self.sentence_break and self.max_words == 0:
+                    self.sentence_break = True
+
                 self.progress.emit(90, "Processing subtitle segments...")
                 subtitles = self._split_subtitles(subtitles)
+                
+                self.sentence_break = old_sentence_break
+
+            else:
+                import whisper
+
+                # Check if model exists locally
+                model_exists = check_model_exists(self.model, self.cache_dir)
+
+                if model_exists:
+                    self.progress.emit(10, f"Loading {self.model} model from local cache...")
+                else:
+                    self.progress.emit(10, f"Model {self.model} not found locally. Downloading...")
+
+                # Load model with explicit download directory to use existing cache
+                model = whisper.load_model(
+                    self.model,
+                    download_root=self.cache_dir
+                )
+
+                if self._cancelled:
+                    return
+
+                # Transcribe
+                self.progress.emit(30, "Transcribing audio...")
+
+                result = model.transcribe(
+                    self.audio_path,
+                    language=self.language if self.language != "auto" else None,
+                    word_timestamps=True,
+                    verbose=False
+                )
+
+                if self._cancelled:
+                    return
+
+                self.progress.emit(80, "Processing segments...")
+
+                # Convert to subtitles
+                subtitles = []
+                for i, segment in enumerate(result.get('segments', [])):
+                    subtitle = Subtitle(
+                        id=i + 1,
+                        start_ms=int(segment['start'] * 1000),
+                        end_ms=int(segment['end'] * 1000),
+                        text=segment['text'].strip()
+                    )
+
+                    # Add word-level timing if available
+                    if 'words' in segment:
+                        subtitle.words = []
+                        for j, word_data in enumerate(segment['words']):
+                            from ...core.models import Word
+                            word = Word(
+                                subtitle_id=subtitle.id,
+                                word_index=j,
+                                text=word_data.get('word', '').strip(),
+                                start_ms=int(word_data.get('start', 0) * 1000),
+                                end_ms=int(word_data.get('end', 0) * 1000)
+                            )
+                            subtitle.words.append(word)
+
+                    subtitles.append(subtitle)
+
+                # Post-process: Split subtitles based on options
+                if self.sentence_break or self.max_words > 0:
+                    self.progress.emit(90, "Processing subtitle segments...")
+                    subtitles = self._split_subtitles(subtitles)
 
             self.progress.emit(100, "Done!")
             self.finished.emit(subtitles)
@@ -471,7 +551,8 @@ class TranscribeDialog(QDialog):
             language,
             self.cache_dir,
             max_words,
-            sentence_break
+            sentence_break,
+            engine=self.settings.whisper_engine
         )
         self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
